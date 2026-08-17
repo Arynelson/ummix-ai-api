@@ -1,0 +1,71 @@
+services:
+  - type: web
+    name: ummix-ai-api-homol
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ummix-ai-postgres-homol
+          property: connectionString
+      - key: DATABASE_SSL_REJECT_UNAUTHORIZED
+        value: "true"
+      - key: UMMIX_API_URL
+        value: https://ummix.workingtech.com.br/api
+      - key: UMMIX_WEB_URL
+        value: https://ummix.workingtech.com.br
+      - key: AI_WEB_ORIGIN
+        sync: false
+      - key: CAMPAIGN_ASSISTANT_ENABLED
+        value: "true"
+      - key: CAMPAIGN_CONTENT_ENABLED
+        value: "false"
+      - key: UMMIX_SERVICE_TOKEN
+        sync: false
+      - key: AI_HANDOFF_ENCRYPTION_KEY
+        sync: false
+      - key: AI_HANDOFF_TTL_SECONDS
+        value: "60"
+      - key: SESSION_TTL_MINUTES
+        value: "120"
+      - key: MESSAGE_LIMIT_PER_WINDOW
+        value: "20"
+      - key: MESSAGE_WINDOW_MINUTES
+        value: "10"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-5.6-sol
+      - key: CAMPAIGN_CONTENT_LENGTH_POLICY_VERSION
+        value: pt-br-v1
+      - key: CAMPAIGN_CONTENT_MIN_WORDS_PER_SECOND
+        value: "2.2"
+      - key: CAMPAIGN_CONTENT_MAX_WORDS_PER_SECOND
+        value: "2.6"
+      - key: CAMPAIGN_CONTENT_EMAIL_ENABLED
+        value: "false"
+      - key: CAMPAIGN_CONTENT_ADMIN_EMAILS
+        value: falecoma@ummix.com.br,tecnologia@ummix.com.br
+      - key: CAMPAIGN_CONTENT_EMAIL_API_KEY
+        sync: false
+      - key: CAMPAIGN_CONTENT_EMAIL_API_URL
+        value: https://api.brevo.com/v3/smtp/email
+      - key: CAMPAIGN_CONTENT_EMAIL_FROM
+        sync: false
+      - key: CAMPAIGN_CONTENT_EMAIL_FROM_NAME
+        value: Ummix Ads
+      - key: CAMPAIGN_CONTENT_EMAIL_TIMEOUT_MS
+        value: "10000"
+
+databases:
+  - name: ummix-ai-postgres-homol
+    databaseName: ummix_ai_homol
+    user: ummix_ai
+    plan: free
+    postgresMajorVersion: "16"
+    ipAllowList: []
