@@ -25,5 +25,5 @@ COPY --from=build /app/dist ./dist
 COPY --from=build /app/migrations ./migrations
 
 USER node
-EXPOSE 3010
+EXPOSE 10000
 CMD ["sh", "-c", "node dist/db/migrate.js up && exec node dist/server.js"]

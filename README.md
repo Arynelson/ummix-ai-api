@@ -26,7 +26,8 @@ npm.cmd run build
 
 O `render.yaml` cria a API e um PostgreSQL temporário privado para homologação.
 Os secrets marcados com `sync: false` devem ser preenchidos no painel do Render.
-O serviço executa as migrations antes de iniciar a API.
+O serviço executa as migrations antes de iniciar a API e escuta a porta `10000`,
+que é a porta padrão dos web services do Render.
 
 A API utiliza `UMMIX_API_URL=https://ummix.workingtech.com.br/api` e mantém o
 `UMMIX_SERVICE_TOKEN` somente no ambiente do servidor. O frontend nunca recebe
