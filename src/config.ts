@@ -43,7 +43,7 @@ const schema = z.object({
   MESSAGE_LIMIT_PER_WINDOW: z.coerce.number().int().min(1).max(100).default(20),
   MESSAGE_WINDOW_MINUTES: z.coerce.number().int().min(1).max(60).default(10),
   OPENAI_API_KEY: z.string().optional(),
-  OPENAI_MODEL: z.string().min(1).default('gpt-5.6-sol'),
+  OPENAI_MODEL: z.string().min(1).default('gpt-5'),
   CAMPAIGN_CONTENT_LENGTH_POLICY_VERSION: z.string().min(1).default('pt-br-v1'),
   CAMPAIGN_CONTENT_MIN_WORDS_PER_SECOND: z.coerce.number().positive().default(2.2),
   CAMPAIGN_CONTENT_MAX_WORDS_PER_SECOND: z.coerce.number().positive().default(2.6),
