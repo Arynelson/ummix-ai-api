@@ -18,7 +18,7 @@ const config: AppConfig = {
   SESSION_TTL_MINUTES: 120,
   MESSAGE_LIMIT_PER_WINDOW: 20,
   MESSAGE_WINDOW_MINUTES: 10,
-  OPENAI_MODEL: 'gpt-5.6-sol',
+  OPENAI_MODEL: 'gpt-5.6-luna',
 };
 
 describe('AssistantService finalization', () => {
