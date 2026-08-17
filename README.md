@@ -33,6 +33,8 @@ A API utiliza `UMMIX_API_URL=https://ummix.workingtech.com.br/api` e mantém o
 `UMMIX_SERVICE_TOKEN` somente no ambiente do servidor. O frontend nunca recebe
 esse token.
 
+`OPENAI_MODEL` deve receber um identificador de modelo habilitado no projeto da OpenAI. O exemplo usa `gpt-5`; se o projeto utilizar outro modelo disponível, substitua esse valor nas variáveis do Render.
+
 Por segurança, `CAMPAIGN_CONTENT_ENABLED=false` e o envio de e-mail permanecem
 desligados até o adapter correspondente em `services` e os testes de homologação
 serem concluídos.

@@ -42,7 +42,7 @@ services:
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_MODEL
-        value: gpt-5.6-sol
+        value: gpt-5
       - key: CAMPAIGN_CONTENT_LENGTH_POLICY_VERSION
         value: pt-br-v1
       - key: CAMPAIGN_CONTENT_MIN_WORDS_PER_SECOND
