@@ -11,10 +11,13 @@ import {
 } from '../domain/state-machine.js';
 import type {
   AssistantSession,
+  AudienceCatalogOption,
+  AudienceFilterSelection,
   CampaignState,
   ChatMessage,
   ClientSnapshot,
   ExtractedCampaignPatch,
+  ValidatedCampaignPatch,
 } from '../domain/types.js';
 import {
   CampaignBriefExtractor,
@@ -65,15 +68,17 @@ export class AssistantService {
     user: UmmixUser;
     clientId?: string;
   }): Promise<SessionView> {
-    const [client, minimumInvestment, locationOptions] = await Promise.all([
+    const [client, minimumInvestment, locationOptions, stateOptions] = await Promise.all([
       this.ummix.getAuthorizedClient(input.token, input.user, input.clientId),
       this.ummix.getMinimumInvestment(input.token),
       this.ummix.getAvailableLocations(input.token),
+      this.ummix.getAvailableStates(input.token).catch(() => []),
     ]);
     const state = initialState(
       minimumInvestment,
       client.businessActivity,
       locationOptions,
+      stateOptions,
     );
     const initialTurn = nextAssistantTurn(state);
     const initialMessage: ChatMessage = {
@@ -103,6 +108,12 @@ export class AssistantService {
       session.state = {
         ...session.state,
         locationOptions: await this.ummix.getAvailableLocations(token),
+      };
+    }
+    if (!session.state.stateOptions?.length && token) {
+      session.state = {
+        ...session.state,
+        stateOptions: await this.ummix.getAvailableStates(token).catch(() => []),
       };
     }
     return this.toView(session);
@@ -138,19 +149,28 @@ export class AssistantService {
 
     let nextState = session.state;
     if (!nextState.locationOptions?.length) {
-      nextState = {
-        ...nextState,
-        locationOptions: await this.ummix.getAvailableLocations(input.token),
-      };
+      const [locationOptions, stateOptions] = await Promise.all([
+        this.ummix.getAvailableLocations(input.token),
+        this.ummix.getAvailableStates(input.token).catch(() => []),
+      ]);
+      nextState = { ...nextState, locationOptions, stateOptions };
     }
     let fallbackToManual = false;
     try {
+      const fullAudienceCatalog = await this.ummix
+        .getAudienceCatalog(input.token)
+        .catch(() => [] as AudienceCatalogOption[]);
+      const audienceCatalog = selectAudienceCatalog(input.message, fullAudienceCatalog);
       const patch = await this.extractor.extract({
         message: input.message,
         currentState: session.state,
         userId: input.user.id,
+        audienceCatalog,
       });
-      nextState = applyExtractedPatch(session.state, patch);
+      nextState = applyExtractedPatch(
+        session.state,
+        validateAudiencePatch(patch, audienceCatalog),
+      );
       nextState = await this.resolveLocationIfPresent(input.token, nextState, patch);
 
       if (canCalculateComparison(nextState) && !nextState.comparison) {
@@ -485,10 +505,14 @@ function buildCampaignPayload(
       cityId: primaryLocation.cityId,
       cityIds,
       states,
+      // Mantém também os nomes canônicos consumidos pelo mapper do services.
+      cidades: cityNames,
+      estados: states,
+      audienceFilters: state.audienceFilters ?? [],
     },
     mediaChannel: channel,
     ...(channel === 'radio' ? { spotDurationRadio: '15' } : { spotDurationTv: '15' }),
-    audienceReach: plan.audienceImpacts ?? plan.inventory ?? 0,
+    audienceReach: toNonNegativeInteger(plan.audienceImpacts ?? plan.inventory),
     baseCpm: plan.cpm ?? 0,
     finalCpm: plan.cpm ?? 0,
     clientId: session.clientId,
@@ -500,13 +524,117 @@ function buildCampaignPayload(
       durationSeconds: state.durationSeconds,
       comparison: state.comparison,
     },
-    impressoesContratadas: plan.totalImpressions ?? 0,
+    impressoesContratadas: toNonNegativeInteger(plan.totalImpressions),
     brandStrength: state.brandStrength,
     format: channel === 'radio' ? 'spot' : 'vt',
-    frequency: plan.frequency ?? 1,
-    period: periodWeeks,
-    totalReach: plan.audienceImpacts ?? plan.inventory ?? 0,
+    frequency: Math.max(1, toNonNegativeInteger(plan.frequency, 1)),
+    period: Math.max(1, toNonNegativeInteger(periodWeeks, 1)),
+    totalReach: toNonNegativeInteger(plan.audienceImpacts ?? plan.inventory),
   };
+}
+
+function toNonNegativeInteger(value: number | null | undefined, fallback = 0): number {
+  const numeric = Number(value ?? fallback);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(0, Math.round(numeric));
+}
+
+function validateAudiencePatch(
+  patch: ExtractedCampaignPatch,
+  catalog: AudienceCatalogOption[],
+): ValidatedCampaignPatch {
+  if (!patch.audienceDescription || patch.audienceFilters === undefined) {
+    const { audienceFilters: _audienceFilters, ...withoutAudienceFilters } = patch;
+    return withoutAudienceFilters;
+  }
+
+  const allowed = new Map(
+    catalog.map((option) => [
+      `${option.questionId}:${option.optionId}`,
+      {
+        questionId: option.questionId,
+        question: option.question,
+        optionId: option.optionId,
+        option: option.option,
+      },
+    ]),
+  );
+  const validated = (patch.audienceFilters ?? [])
+    .filter((candidate) => candidate.confidence >= 0.7)
+    .map((candidate) => allowed.get(`${candidate.questionId}:${candidate.optionId}`))
+    .filter((selection): selection is AudienceFilterSelection => Boolean(selection));
+
+  return { ...patch, audienceFilters: dedupeAudienceFilters(validated) };
+}
+
+function dedupeAudienceFilters(filters: AudienceFilterSelection[]): AudienceFilterSelection[] {
+  const unique = new Map<string, AudienceFilterSelection>();
+  for (const filter of filters) {
+    unique.set(`${filter.questionId}:${filter.optionId}`, filter);
+  }
+  return [...unique.values()];
+}
+
+function selectAudienceCatalog(
+  message: string,
+  catalog: AudienceCatalogOption[],
+): AudienceCatalogOption[] {
+  if (!mentionsAudience(message)) return [];
+
+  const terms = tokenize(message);
+  const dimensionPattern = /sexo|gener|idade|faixa|renda|escolar|ocup|regi|filh|relig|ra[cç]a|cor/i;
+  const ranked = catalog
+    .map((option) => {
+      const searchable = `${option.question} ${option.option}`.toLocaleLowerCase('pt-BR');
+      const termScore = terms.reduce(
+        (score, term) => score + (searchable.includes(term) ? 3 : 0),
+        0,
+      );
+      const profileScore = option.category === 'perfil' ? 1 : 0;
+      const dimensionScore = dimensionPattern.test(option.question) ? 1 : 0;
+      return { option, score: termScore + profileScore + dimensionScore };
+    })
+    .filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score);
+
+  return (ranked.length > 0 ? ranked.map((item) => item.option) : catalog).slice(0, 400);
+}
+
+function mentionsAudience(message: string): boolean {
+  return /p[uú]blico|alcan[cç]ar|idade|anos|mulher|homem|femin|mascul|renda|classe|fam[ií]lia|interessad|cliente/i.test(
+    message,
+  );
+}
+
+function tokenize(message: string): string[] {
+  const stopWords = new Set([
+    'para',
+    'meu',
+    'minha',
+    'com',
+    'que',
+    'uma',
+    'uns',
+    'umas',
+    'dos',
+    'das',
+    'de',
+    'do',
+    'da',
+    'e',
+    'a',
+    'o',
+  ]);
+  return normalizeText(message)
+    .split(/\s+/)
+    .filter((term) => term.length >= 3 && !stopWords.has(term));
+}
+
+function normalizeText(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLocaleLowerCase('pt-BR');
 }
 
 function addPeriod(startDate: string, periodWeeks: number): string {

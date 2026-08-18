@@ -6,15 +6,17 @@ import {
   type CampaignLocation,
   type CampaignState,
   type ChannelComparison,
-  type ExtractedCampaignPatch,
   type MediaChannel,
   type MissingField,
+  type StateOption,
+  type ValidatedCampaignPatch,
 } from './types.js';
 
 export function initialState(
   minimumInvestment: number,
   businessActivity: string | null,
   locationOptions: CampaignLocation[] = [],
+  stateOptions: StateOption[] = [],
 ): CampaignState {
   const category = CATEGORIES.includes(businessActivity as CampaignCategory)
     ? (businessActivity as CampaignCategory)
@@ -27,6 +29,8 @@ export function initialState(
     location: null,
     locations: [],
     locationOptions,
+    stateOptions,
+    audienceFilters: [],
     unresolvedLocation: null,
     maximumBudget: null,
     desiredStartDate: null,
@@ -41,13 +45,16 @@ export function initialState(
 
 export function applyExtractedPatch(
   current: CampaignState,
-  patch: ExtractedCampaignPatch,
+  patch: ValidatedCampaignPatch,
 ): CampaignState {
   const next: CampaignState = { ...current };
 
   if (patch.productService?.trim()) next.productService = patch.productService.trim().slice(0, 240);
   if (patch.audienceDescription?.trim()) {
     next.audienceDescription = patch.audienceDescription.trim().slice(0, 500);
+    if (patch.audienceFilters !== undefined) {
+      next.audienceFilters = patch.audienceFilters ?? [];
+    }
   }
   if (patch.objective && OBJECTIVES.includes(patch.objective)) next.objective = patch.objective;
   if (patch.selectedChannel && CHANNELS.includes(patch.selectedChannel)) {
@@ -75,9 +82,14 @@ export function applyExtractedPatch(
   if (
     current.maximumBudget !== next.maximumBudget ||
     current.objective !== next.objective ||
-    current.location?.cityId !== next.location?.cityId
+    current.location?.cityId !== next.location?.cityId ||
+    current.audienceDescription !== next.audienceDescription ||
+    current.desiredStartDate !== next.desiredStartDate ||
+    JSON.stringify(current.audienceFilters ?? []) !==
+      JSON.stringify(next.audienceFilters ?? [])
   ) {
     next.comparison = null;
+    next.selectedChannel = null;
   }
 
   return next;
@@ -86,8 +98,8 @@ export function applyExtractedPatch(
 export function missingFields(state: CampaignState): MissingField[] {
   const missing: MissingField[] = [];
   if (!state.productService) missing.push('productService');
-  if (!state.objective) missing.push('objective');
   if (campaignLocations(state).length === 0) missing.push('location');
+  if (!state.objective) missing.push('objective');
   if (!state.audienceDescription) missing.push('audienceDescription');
   if (state.maximumBudget === null || state.maximumBudget < state.minimumInvestment) {
     missing.push('maximumBudget');
@@ -105,11 +117,14 @@ export function missingFields(state: CampaignState): MissingField[] {
 
 export function canCalculateComparison(state: CampaignState): boolean {
   return Boolean(
+    state.productService &&
     state.objective &&
-      campaignLocations(state).length > 0 &&
-      state.category &&
-      state.maximumBudget !== null &&
-      state.maximumBudget >= state.minimumInvestment,
+    campaignLocations(state).length > 0 &&
+    state.audienceDescription &&
+    state.category &&
+    state.maximumBudget !== null &&
+    state.maximumBudget >= state.minimumInvestment &&
+    state.desiredStartDate,
   );
 }
 
@@ -165,24 +180,10 @@ export function nextAssistantTurn(
     };
   }
 
-  if (!state.productService && !state.objective) {
-    return {
-      message:
-        'O que você quer divulgar e qual é o principal objetivo: fortalecer a marca, lançar um produto ou promover uma oferta?',
-      quickReplies: ['Fortalecer a marca', 'Lançar um produto', 'Promover uma oferta'],
-    };
-  }
   if (!state.productService) {
     return {
       message: 'Qual produto ou serviço você quer divulgar nesta campanha?',
       quickReplies: [],
-    };
-  }
-  if (!state.objective) {
-    return {
-      message:
-        'Qual é o principal objetivo da campanha: fortalecer a marca, lançar um produto ou promover uma oferta?',
-      quickReplies: ['Fortalecer a marca', 'Lançar um produto', 'Promover uma oferta'],
     };
   }
   if (campaignLocations(state).length === 0) {
@@ -195,6 +196,13 @@ export function nextAssistantTurn(
         ? `${locationHint}Seu negócio ou comércio fica ou atende clientes em uma ou mais destas cidades? Selecione as praças disponíveis e confirme.`
         : `${locationHint}Em qual cidade está o público da campanha?`,
       quickReplies: [],
+    };
+  }
+  if (!state.objective) {
+    return {
+      message:
+        'Qual é o principal objetivo da campanha: fortalecer a marca, lançar um produto ou promover uma oferta?',
+      quickReplies: ['Fortalecer a marca', 'Lançar um produto', 'Promover uma oferta'],
     };
   }
   if (!state.audienceDescription) {

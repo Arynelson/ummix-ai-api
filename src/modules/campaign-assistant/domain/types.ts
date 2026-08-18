@@ -32,6 +32,33 @@ export interface CampaignLocation {
   stateUf: string | null;
 }
 
+export interface StateOption {
+  stateId: string;
+  stateName: string;
+  stateUf: string;
+}
+
+export interface AudienceFilterSelection {
+  questionId: string;
+  question: string;
+  optionId: string;
+  option: string;
+}
+
+export interface AudienceFilterCandidate {
+  questionId: string;
+  optionId: string;
+  confidence: number;
+}
+
+export interface AudienceCatalogOption {
+  questionId: string;
+  question: string;
+  category: string | null;
+  optionId: string;
+  option: string;
+}
+
 export interface MediaPlan {
   channel: MediaChannel;
   available: boolean;
@@ -60,6 +87,8 @@ export interface CampaignState {
   location: CampaignLocation | null;
   locations?: CampaignLocation[];
   locationOptions?: CampaignLocation[];
+  stateOptions?: StateOption[];
+  audienceFilters?: AudienceFilterSelection[];
   unresolvedLocation: string | null;
   maximumBudget: number | null;
   desiredStartDate: string | null;
@@ -108,11 +137,17 @@ export interface ExtractedCampaignPatch {
   productService: string | null;
   objective: CampaignObjective | null;
   audienceDescription: string | null;
+  audienceFilters?: AudienceFilterCandidate[] | null;
   cityName: string | null;
   stateUf: string | null;
   maximumBudget: number | null;
   desiredStartDate: string | null;
   selectedChannel: MediaChannel | null;
+}
+
+export interface ValidatedCampaignPatch
+  extends Omit<ExtractedCampaignPatch, 'audienceFilters'> {
+  audienceFilters?: AudienceFilterSelection[] | null;
 }
 
 export type MissingField =

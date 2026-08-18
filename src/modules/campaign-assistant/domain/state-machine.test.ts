@@ -59,7 +59,7 @@ describe('campaign assistant state machine', () => {
     expect(turn.quickReplies).toEqual([]);
   });
 
-  it('asks only for the objective after the product has already been collected', () => {
+  it('asks for the city before the objective after the product is collected', () => {
     const state = {
       ...initialState(100, 'varejo'),
       productService: 'Consultoria financeira',
@@ -67,12 +67,34 @@ describe('campaign assistant state machine', () => {
 
     const turn = nextAssistantTurn(state);
 
-    expect(turn.message).toContain('principal objetivo');
-    expect(turn.quickReplies).toEqual([
+    expect(turn.message).toContain('qual cidade');
+    expect(turn.quickReplies).toEqual([]);
+
+    const afterCity = {
+      ...state,
+      location: { cityId: 'city', cityName: 'Goiânia', stateUf: 'GO' },
+      locations: [{ cityId: 'city', cityName: 'Goiânia', stateUf: 'GO' }],
+    };
+    const objectiveTurn = nextAssistantTurn(afterCity);
+    expect(objectiveTurn.message).toContain('principal objetivo');
+    expect(objectiveTurn.quickReplies).toEqual([
       'Fortalecer a marca',
       'Lançar um produto',
       'Promover uma oferta',
     ]);
+  });
+
+  it('does not calculate the channel comparison before audience and start date', () => {
+    const state = {
+      ...initialState(100, 'varejo'),
+      productService: 'Consultoria financeira',
+      objective: 'reconhecimento_marca' as const,
+      location: { cityId: 'city', cityName: 'Goiânia', stateUf: 'GO' },
+      locations: [{ cityId: 'city', cityName: 'Goiânia', stateUf: 'GO' }],
+      maximumBudget: 1000,
+    };
+
+    expect(nextAssistantTurn(state).message).toContain('descreveria o público');
   });
 
   it('offers structured location selection and then asks only for the audience', () => {

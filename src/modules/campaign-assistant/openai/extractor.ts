@@ -1,11 +1,26 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { CHANNELS, OBJECTIVES, type CampaignState, type ExtractedCampaignPatch } from '../domain/types.js';
+import {
+  CHANNELS,
+  OBJECTIVES,
+  type AudienceCatalogOption,
+  type CampaignState,
+  type ExtractedCampaignPatch,
+} from '../domain/types.js';
 
 const extractionSchema = z.object({
   productService: z.string().max(240).nullable(),
   objective: z.enum(OBJECTIVES).nullable(),
   audienceDescription: z.string().max(500).nullable(),
+  audienceFilters: z
+    .array(
+      z.object({
+        questionId: z.string().uuid(),
+        optionId: z.string().uuid(),
+        confidence: z.number().min(0).max(1),
+      }),
+    )
+    .max(20),
   cityName: z.string().max(120).nullable(),
   stateUf: z.string().max(2).nullable(),
   maximumBudget: z.number().nonnegative().nullable(),
@@ -20,6 +35,20 @@ const jsonSchema = {
     productService: { type: ['string', 'null'], maxLength: 240 },
     objective: { type: ['string', 'null'], enum: [...OBJECTIVES, null] },
     audienceDescription: { type: ['string', 'null'], maxLength: 500 },
+    audienceFilters: {
+      type: 'array',
+      maxItems: 20,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          questionId: { type: 'string' },
+          optionId: { type: 'string' },
+          confidence: { type: 'number', minimum: 0, maximum: 1 },
+        },
+        required: ['questionId', 'optionId', 'confidence'],
+      },
+    },
     cityName: { type: ['string', 'null'], maxLength: 120 },
     stateUf: { type: ['string', 'null'], maxLength: 2 },
     maximumBudget: { type: ['number', 'null'], minimum: 0 },
@@ -33,6 +62,7 @@ const jsonSchema = {
     'productService',
     'objective',
     'audienceDescription',
+    'audienceFilters',
     'cityName',
     'stateUf',
     'maximumBudget',
@@ -58,6 +88,7 @@ export class CampaignBriefExtractor {
     message: string;
     currentState: CampaignState;
     userId: string;
+    audienceCatalog?: AudienceCatalogOption[];
   }): Promise<ExtractedCampaignPatch> {
     if (!this.apiKey?.trim()) {
       throw new OpenAIUnavailableError('OPENAI_API_KEY não configurada');
@@ -91,12 +122,15 @@ export class CampaignBriefExtractor {
             'Use null quando o campo não foi informado; não repita valores apenas porque aparecem no estado atual.',
             'Mapeie objetivos somente para reconhecimento_marca, lancamento_produto ou promocao_oferta.',
             'Mapeie canal somente quando o usuário escolher explicitamente Rádio ou TV.',
+            'Quando a mensagem descrever o público, classifique somente opções presentes no audienceCatalog, retornando os IDs exatos questionId e optionId e uma confiança de 0 a 1.',
+            'Não invente IDs, perguntas ou opções. Se não houver correspondência segura, retorne audienceFilters vazio.',
             'Converta valores monetários brasileiros para número e datas relativas para YYYY-MM-DD usando a data de referência.',
             'Nunca invente cidade, categoria, preço, audiência, frequência, período ou alcance.',
           ].join(' '),
           input: JSON.stringify({
             referenceDate: new Date().toISOString().slice(0, 10),
             currentState: input.currentState,
+            audienceCatalog: input.audienceCatalog ?? [],
             userMessage: input.message,
           }),
         }),

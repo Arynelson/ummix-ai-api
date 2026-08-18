@@ -4,12 +4,15 @@ import {
   chooseRecommendedChannel,
 } from '../domain/state-machine.js';
 import type {
+  AudienceCatalogOption,
+  AudienceFilterSelection,
   CampaignLocation,
   CampaignState,
   ChannelComparison,
   ClientSnapshot,
   MediaChannel,
   MediaPlan,
+  StateOption,
 } from '../domain/types.js';
 
 export interface UmmixUser {
@@ -34,6 +37,28 @@ interface CityResponse {
   state?: { uf?: string | null };
 }
 
+interface StateResponse {
+  id: string;
+  name: string;
+  uf: string;
+  is_active?: boolean;
+}
+
+interface QuestionOptionResponse {
+  id: string;
+  text: string;
+  is_active?: boolean;
+}
+
+interface QuestionResponse {
+  id: string;
+  title: string;
+  category?: string | null;
+  options?: QuestionOptionResponse[];
+  stage?: string;
+  type?: string;
+}
+
 interface CalculationResponse {
   suggestedFrequency: number;
   suggestedPeriod: number;
@@ -56,6 +81,11 @@ export class UmmixApiError extends Error {
 
 export class UmmixClient {
   private cityCache: { expiresAt: number; cities: CityResponse[] } | null = null;
+  private stateCache: { expiresAt: number; states: StateOption[] } | null = null;
+  private audienceCatalogCache: {
+    expiresAt: number;
+    options: AudienceCatalogOption[];
+  } | null = null;
 
   constructor(private readonly baseUrl: string) {}
 
@@ -140,6 +170,61 @@ export class UmmixClient {
     }));
   }
 
+  async getAvailableStates(token: string): Promise<StateOption[]> {
+    if (this.stateCache && this.stateCache.expiresAt > Date.now()) {
+      return this.stateCache.states;
+    }
+
+    const [states, cities] = await Promise.all([
+      this.request<StateResponse[]>('/states?activeOnly=true&withResponses=false', token),
+      this.getCities(token),
+    ]);
+    const cityUfs = new Set(
+      cities
+        .map((city) => city.state?.uf?.trim().toUpperCase())
+        .filter((uf): uf is string => Boolean(uf)),
+    );
+    const availableStates = states
+      .filter((state) => state.is_active !== false && cityUfs.has(state.uf.toUpperCase()))
+      .map((state) => ({
+        stateId: state.id,
+        stateName: state.name,
+        stateUf: state.uf.toUpperCase(),
+      }));
+    this.stateCache = {
+      states: availableStates,
+      expiresAt: Date.now() + 10 * 60 * 1000,
+    };
+    return availableStates;
+  }
+
+  async getAudienceCatalog(token: string): Promise<AudienceCatalogOption[]> {
+    if (
+      this.audienceCatalogCache &&
+      this.audienceCatalogCache.expiresAt > Date.now()
+    ) {
+      return this.audienceCatalogCache.options;
+    }
+
+    const questions = await this.request<QuestionResponse[]>('/questions/user/active', token);
+    const options = questions.filter(isAudienceQuestion).flatMap((question) =>
+      (question.options ?? [])
+        .filter((option) => option.is_active !== false)
+        .map((option) => ({
+          questionId: question.id,
+          question: question.title,
+          category: question.category ?? null,
+          optionId: option.id,
+          option: option.text,
+        })),
+    );
+    this.audienceCatalogCache = {
+      options,
+      expiresAt: Date.now() + 5 * 60 * 1000,
+    };
+    return options;
+  }
+
   async compareChannels(
     token: string,
     state: CampaignState,
@@ -194,7 +279,6 @@ export class UmmixClient {
     channel: MediaChannel,
   ): Promise<MediaPlan> {
     try {
-      const locations = campaignLocations(state);
       const [calculation, impacts] = await Promise.all([
         this.request<CalculationResponse>('/campaigns/calculate', token, {
           method: 'POST',
@@ -205,20 +289,14 @@ export class UmmixClient {
             brandStrength: state.brandStrength,
             format: channel === 'radio' ? 'spot' : 'vt',
             duration: String(state.durationSeconds),
-            numFilters: 1,
+            numFilters: Math.max(
+              1,
+              new Set((state.audienceFilters ?? []).map((filter) => filter.questionId)).size,
+            ),
             investment: state.maximumBudget,
           }),
         }),
-        Promise.all(
-          locations.map((location) =>
-            this.request<{ totalImpacts: number }>(
-              `/survey/impacts?city=${encodeURIComponent(location.cityName)}&mediaChannel=${channel}`,
-              token,
-            ).catch(() => ({ totalImpacts: 0 })),
-          ),
-        ).then((results) => ({
-          totalImpacts: results.reduce((total, result) => total + result.totalImpacts, 0),
-        })),
+        this.calculateAudienceImpacts(token, state, channel),
       ]);
 
       return {
@@ -259,23 +337,39 @@ export class UmmixClient {
     ) {
       return this.cityCache.cities;
     }
-    const [cities, radioLocations, tvLocations] = await Promise.all([
-      this.request<CityResponse[]>('/cities?activeOnly=true&withResponses=false', token),
-      this.request<string[]>('/cpm/locations/RADIO', token).catch(() => []),
-      this.request<string[]>('/cpm/locations/TV', token).catch(() => []),
-    ]);
-    const inventoryLocations = new Set(
-      [...radioLocations, ...tvLocations].map((location) => normalize(location)),
+    const supportedCities = await this.request<CityResponse[]>(
+      '/cities?activeOnly=true&withResponses=false',
+      token,
     );
-    const supportedCities =
-      inventoryLocations.size > 0
-        ? cities.filter((city) => inventoryLocations.has(normalize(city.name)))
-        : cities;
     this.cityCache = {
       cities: supportedCities,
       expiresAt: Date.now() + 10 * 60 * 1000,
     };
     return supportedCities;
+  }
+
+  private async calculateAudienceImpacts(
+    token: string,
+    state: CampaignState,
+    channel: MediaChannel,
+  ): Promise<{ totalImpacts: number }> {
+    const response = await this.request<{ totalImpactos?: number; totalImpacts?: number }>(
+      '/survey/impacts/advanced',
+      token,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          demograficos: {
+            cidade: campaignLocations(state).map((location) => location.cityId),
+          },
+          respostas: groupAudienceFilters(state.audienceFilters ?? []),
+          mediaChannel: channel,
+        }),
+      },
+    );
+    return {
+      totalImpacts: Number(response.totalImpactos ?? response.totalImpacts ?? 0),
+    };
   }
 
   private async request<T>(
@@ -310,6 +404,18 @@ export class UmmixClient {
   }
 }
 
+function isAudienceQuestion(question: QuestionResponse): boolean {
+  const normalizedTitle = normalize(question.title);
+  const choiceQuestion = !question.type ||
+    ['single_choice', 'multiple_choice', 'radio_with_details'].includes(question.type);
+  const flowQuestion =
+    question.stage === 'campaign_creation' ||
+    /estado|cidade|pra[cç]a|canal|r[aá]dio|tv|formato|dura[cç][aã]o|investimento|or[cç]amento|objetivo/i.test(
+      normalizedTitle,
+    );
+  return choiceQuestion && !flowQuestion;
+}
+
 function toSnapshot(client: UmmixClientResponse): ClientSnapshot {
   return {
     id: client.id,
@@ -327,4 +433,22 @@ function normalize(value: string): string {
     .replace(/\p{Diacritic}/gu, '')
     .trim()
     .toLocaleLowerCase('pt-BR');
+}
+
+function groupAudienceFilters(filters: AudienceFilterSelection[]) {
+  const grouped = new Map<string, { question: string; options: Set<string> }>();
+  for (const filter of filters) {
+    const current = grouped.get(filter.questionId) ?? {
+      question: filter.question,
+      options: new Set<string>(),
+    };
+    current.options.add(filter.option);
+    grouped.set(filter.questionId, current);
+  }
+  return [...grouped.values()].map((filter) => ({
+    pergunta: filter.question,
+    perguntaOriginal: filter.question,
+    opcoes: [...filter.options],
+    operador: 'OR' as const,
+  }));
 }
