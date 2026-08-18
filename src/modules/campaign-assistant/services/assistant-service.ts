@@ -23,6 +23,7 @@ import {
   CampaignBriefExtractor,
   OpenAIUnavailableError,
 } from '../openai/extractor.js';
+import { mapAudienceFiltersToTargetAudience } from '../domain/audience-filter-mapper.js';
 import { UmmixClient, type UmmixUser } from '../ummix/ummix-client.js';
 
 export interface SessionView {
@@ -80,10 +81,12 @@ export class AssistantService {
       locationOptions,
       stateOptions,
     );
-    const initialTurn = nextAssistantTurn(state);
+    const initialTurn = nextAssistantTurn(state, {
+      clientName: displayClient(client),
+    });
     const initialMessage: ChatMessage = {
       role: 'assistant',
-      content: `Vamos montar uma campanha para ${displayClient(client)}. ${initialTurn.message}`,
+      content: initialTurn.message,
       createdAt: new Date().toISOString(),
     };
     const session = await this.repository.create({
@@ -168,7 +171,7 @@ export class AssistantService {
         audienceCatalog,
       });
       nextState = applyExtractedPatch(
-        session.state,
+        nextState,
         validateAudiencePatch(patch, audienceCatalog),
       );
       nextState = await this.resolveLocationIfPresent(input.token, nextState, patch);
@@ -189,7 +192,10 @@ export class AssistantService {
       });
     }
 
-    const turn = nextAssistantTurn(nextState, { llmUnavailable: fallbackToManual });
+    const turn = nextAssistantTurn(nextState, {
+      llmUnavailable: fallbackToManual,
+      clientName: displayClient(session.clientSnapshot),
+    });
     const now = new Date().toISOString();
     const messages: ChatMessage[] = [
       ...session.messages,
@@ -258,6 +264,7 @@ export class AssistantService {
       location: selectedLocations[0] ?? null,
       unresolvedLocation: null,
       comparison: null,
+      selectedChannel: null,
     };
     if (canCalculateComparison(nextState)) {
       nextState = {
@@ -266,7 +273,9 @@ export class AssistantService {
       };
     }
 
-    const turn = nextAssistantTurn(nextState);
+    const turn = nextAssistantTurn(nextState, {
+      clientName: displayClient(session.clientSnapshot),
+    });
     const now = new Date().toISOString();
     const cityLabels = selectedLocations.map(
       (location) =>
@@ -410,7 +419,9 @@ export class AssistantService {
   }
 
   private toView(session: AssistantSession): SessionView {
-    const turn = nextAssistantTurn(session.state);
+    const turn = nextAssistantTurn(session.state, {
+      clientName: displayClient(session.clientSnapshot),
+    });
     return {
       id: session.id,
       status: session.status,
@@ -490,6 +501,7 @@ function buildCampaignPayload(
         .filter((stateUf): stateUf is string => Boolean(stateUf)),
     ),
   ];
+  const audienceFilters = state.audienceFilters ?? [];
 
   return {
     campaignName: campaignName(state),
@@ -508,7 +520,8 @@ function buildCampaignPayload(
       // Mantém também os nomes canônicos consumidos pelo mapper do services.
       cidades: cityNames,
       estados: states,
-      audienceFilters: state.audienceFilters ?? [],
+      ...mapAudienceFiltersToTargetAudience(audienceFilters),
+      audienceFilters,
     },
     mediaChannel: channel,
     ...(channel === 'radio' ? { spotDurationRadio: '15' } : { spotDurationTv: '15' }),
@@ -556,6 +569,8 @@ function validateAudiencePatch(
         question: option.question,
         optionId: option.optionId,
         option: option.option,
+        ...(option.questionOriginal ? { questionOriginal: option.questionOriginal } : {}),
+        ...(option.category !== undefined ? { category: option.category } : {}),
       },
     ]),
   );
@@ -585,12 +600,12 @@ function selectAudienceCatalog(
   const dimensionPattern = /sexo|gener|idade|faixa|renda|escolar|ocup|regi|filh|relig|ra[cç]a|cor/i;
   const ranked = catalog
     .map((option) => {
-      const searchable = `${option.question} ${option.option}`.toLocaleLowerCase('pt-BR');
+      const searchable = `${option.question} ${option.questionOriginal ?? ''} ${option.option}`.toLocaleLowerCase('pt-BR');
       const termScore = terms.reduce(
         (score, term) => score + (searchable.includes(term) ? 3 : 0),
         0,
       );
-      const profileScore = option.category === 'perfil' ? 1 : 0;
+      const profileScore = /perfil|publico/.test(option.category?.toLocaleLowerCase('pt-BR') ?? '') ? 1 : 0;
       const dimensionScore = dimensionPattern.test(option.question) ? 1 : 0;
       return { option, score: termScore + profileScore + dimensionScore };
     })

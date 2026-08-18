@@ -6,6 +6,7 @@ import {
   missingFields,
   nextAssistantTurn,
 } from './state-machine.js';
+import type { CampaignState } from './types.js';
 
 describe('campaign assistant state machine', () => {
   it('keeps the budget as an exact hard cap and blocks values below the minimum', () => {
@@ -46,42 +47,41 @@ describe('campaign assistant state machine', () => {
     expect(isReadyToFinalize(state)).toBe(false);
   });
 
-  it('asks only for the product after the objective has already been collected', () => {
+  it('starts with the objective question', () => {
+    const turn = nextAssistantTurn(initialState(100, 'varejo'));
+
+    expect(turn.message).toBe(
+      'Qual é o principal objetivo da campanha: fortalecer a marca, lançar um produto ou promover uma oferta?',
+    );
+    expect(turn.quickReplies).toEqual([
+      'Fortalecer a marca',
+      'Lançar um produto',
+      'Promover uma oferta',
+    ]);
+  });
+
+  it('asks for the city after the objective and before the product', () => {
+    const option = { cityId: 'city', cityName: 'Goiânia', stateUf: 'GO' };
     const state = {
-      ...initialState(100, 'varejo'),
+      ...initialState(100, 'varejo', [option]),
       objective: 'reconhecimento_marca' as const,
     };
 
     const turn = nextAssistantTurn(state);
 
-    expect(turn.message).toContain('produto ou serviço');
-    expect(turn.message).not.toContain('principal objetivo');
-    expect(turn.quickReplies).toEqual([]);
-  });
-
-  it('asks for the city before the objective after the product is collected', () => {
-    const state = {
-      ...initialState(100, 'varejo'),
-      productService: 'Consultoria financeira',
-    };
-
-    const turn = nextAssistantTurn(state);
-
-    expect(turn.message).toContain('qual cidade');
+    expect(turn.message).toContain('Seu negócio ou comércio fica ou atende clientes');
     expect(turn.quickReplies).toEqual([]);
 
     const afterCity = {
       ...state,
-      location: { cityId: 'city', cityName: 'Goiânia', stateUf: 'GO' },
-      locations: [{ cityId: 'city', cityName: 'Goiânia', stateUf: 'GO' }],
+      location: option,
+      locations: [option],
     };
-    const objectiveTurn = nextAssistantTurn(afterCity);
-    expect(objectiveTurn.message).toContain('principal objetivo');
-    expect(objectiveTurn.quickReplies).toEqual([
-      'Fortalecer a marca',
-      'Lançar um produto',
-      'Promover uma oferta',
-    ]);
+    const productTurn = nextAssistantTurn(afterCity, { clientName: 'Empresa' });
+    expect(productTurn.message).toBe(
+      'Vamos montar uma campanha para Empresa. Qual produto ou serviço você quer divulgar nesta campanha?',
+    );
+    expect(productTurn.quickReplies).toEqual([]);
   });
 
   it('does not calculate the channel comparison before audience and start date', () => {
@@ -177,5 +177,40 @@ describe('campaign assistant state machine', () => {
 
     expect(isReadyToFinalize(state)).toBe(false);
     expect(nextAssistantTurn(state).quickReplies).toEqual([]);
+  });
+
+  it('preserves a channel explicitly selected in the same message that changes inputs', () => {
+    const current: CampaignState = {
+      ...initialState(100, 'varejo'),
+      productService: 'Oferta',
+      objective: 'promocao_oferta' as const,
+      audienceDescription: 'Adultos',
+      location: { cityId: 'city', cityName: 'Goiânia', stateUf: 'GO' },
+      locations: [{ cityId: 'city', cityName: 'Goiânia', stateUf: 'GO' }],
+      maximumBudget: 1000,
+      desiredStartDate: '2026-08-15',
+      selectedChannel: 'radio' as const,
+      comparison: {
+        radio: { channel: 'radio' as const, available: true },
+        tv: { channel: 'tv' as const, available: true },
+        recommendedChannel: 'radio' as const,
+        rationale: 'Rádio',
+      },
+    } as CampaignState;
+
+    const next = applyExtractedPatch(current, {
+      productService: null,
+      objective: null,
+      audienceDescription: 'Adultos interessados em tecnologia',
+      audienceFilters: [],
+      cityName: null,
+      stateUf: null,
+      maximumBudget: 1200,
+      desiredStartDate: null,
+      selectedChannel: 'radio',
+    });
+
+    expect(next.selectedChannel).toBe('radio');
+    expect(next.comparison).toBeNull();
   });
 });

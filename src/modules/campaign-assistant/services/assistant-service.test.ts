@@ -67,6 +67,15 @@ describe('AssistantService finalization', () => {
       productService: 'Clínica',
       objective: 'reconhecimento_marca' as const,
       audienceDescription: 'Mulheres adultas',
+      audienceFilters: [
+        {
+          questionId: 'age-question',
+          question: 'Faixa etária',
+          questionOriginal: 'P3. Qual sua idade?',
+          optionId: 'age-option',
+          option: '30 a 34 anos',
+        },
+      ],
       location: { cityId: 'city', cityName: 'Goiânia', stateUf: 'GO' },
       locations: [{ cityId: 'city', cityName: 'Goiânia', stateUf: 'GO' }],
       maximumBudget: 1000,
@@ -150,7 +159,7 @@ describe('AssistantService finalization', () => {
       {} as never,
     );
 
-    await service.finalize({
+    const result = await service.finalize({
       id: session.id,
       token: 'redacted',
       user: {
@@ -170,7 +179,20 @@ describe('AssistantService finalization', () => {
         impressoesContratadas: 1001,
         frequency: 3,
         period: 3,
+        targetAudience: expect.objectContaining({
+          idadeFaixas: ['30-34'],
+          selections: [
+            {
+              question: 'Faixa etária',
+              answers: ['30 a 34 anos'],
+            },
+          ],
+        }),
       }),
+    );
+    expect(result.wizardStep).toBe(4);
+    expect(result.reviewUrl).toContain(
+      '/wizard?campaignId=147dad44-1eea-411b-9b5d-1f6467d91712&step=4&source=ai_assistant&assistantSessionId=93203443-1fe8-45d0-a90d-8ec96ba8042f',
     );
   });
 
@@ -273,6 +295,7 @@ describe('AssistantService finalization', () => {
       {
         questionId: '11111111-1111-4111-8111-111111111111',
         question: 'Gênero',
+        category: 'perfil',
         optionId: '22222222-2222-4222-8222-222222222222',
         option: 'Feminino',
       },

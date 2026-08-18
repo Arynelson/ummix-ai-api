@@ -41,6 +41,8 @@ export interface StateOption {
 export interface AudienceFilterSelection {
   questionId: string;
   question: string;
+  questionOriginal?: string;
+  category?: string | null;
   optionId: string;
   option: string;
 }
@@ -54,6 +56,7 @@ export interface AudienceFilterCandidate {
 export interface AudienceCatalogOption {
   questionId: string;
   question: string;
+  questionOriginal?: string;
   category: string | null;
   optionId: string;
   option: string;

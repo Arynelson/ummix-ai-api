@@ -48,6 +48,10 @@ export function applyExtractedPatch(
   patch: ValidatedCampaignPatch,
 ): CampaignState {
   const next: CampaignState = { ...current };
+  const selectedChannelFromPatch =
+    patch.selectedChannel && CHANNELS.includes(patch.selectedChannel)
+      ? patch.selectedChannel
+      : null;
 
   if (patch.productService?.trim()) next.productService = patch.productService.trim().slice(0, 240);
   if (patch.audienceDescription?.trim()) {
@@ -57,9 +61,7 @@ export function applyExtractedPatch(
     }
   }
   if (patch.objective && OBJECTIVES.includes(patch.objective)) next.objective = patch.objective;
-  if (patch.selectedChannel && CHANNELS.includes(patch.selectedChannel)) {
-    next.selectedChannel = patch.selectedChannel;
-  }
+  if (selectedChannelFromPatch) next.selectedChannel = selectedChannelFromPatch;
   if (patch.maximumBudget !== null && Number.isFinite(patch.maximumBudget)) {
     next.maximumBudget = Math.round(Math.max(0, patch.maximumBudget) * 100) / 100;
   }
@@ -89,7 +91,9 @@ export function applyExtractedPatch(
       JSON.stringify(next.audienceFilters ?? [])
   ) {
     next.comparison = null;
-    next.selectedChannel = null;
+    // Se a mesma mensagem mudou dados e confirmou um canal, a confirmação
+    // explícita do cliente deve sobreviver ao recálculo da comparação.
+    next.selectedChannel = selectedChannelFromPatch;
   }
 
   return next;
@@ -97,9 +101,9 @@ export function applyExtractedPatch(
 
 export function missingFields(state: CampaignState): MissingField[] {
   const missing: MissingField[] = [];
-  if (!state.productService) missing.push('productService');
-  if (campaignLocations(state).length === 0) missing.push('location');
   if (!state.objective) missing.push('objective');
+  if (campaignLocations(state).length === 0) missing.push('location');
+  if (!state.productService) missing.push('productService');
   if (!state.audienceDescription) missing.push('audienceDescription');
   if (state.maximumBudget === null || state.maximumBudget < state.minimumInvestment) {
     missing.push('maximumBudget');
@@ -163,7 +167,7 @@ export function buildRationale(comparison: ChannelComparison): string {
 
 export function nextAssistantTurn(
   state: CampaignState,
-  options: { llmUnavailable?: boolean } = {},
+  options: { llmUnavailable?: boolean; clientName?: string } = {},
 ): { message: string; quickReplies: string[] } {
   if (options.llmUnavailable) {
     return {
@@ -180,10 +184,11 @@ export function nextAssistantTurn(
     };
   }
 
-  if (!state.productService) {
+  if (!state.objective) {
     return {
-      message: 'Qual produto ou serviço você quer divulgar nesta campanha?',
-      quickReplies: [],
+      message:
+        'Qual é o principal objetivo da campanha: fortalecer a marca, lançar um produto ou promover uma oferta?',
+      quickReplies: ['Fortalecer a marca', 'Lançar um produto', 'Promover uma oferta'],
     };
   }
   if (campaignLocations(state).length === 0) {
@@ -198,11 +203,13 @@ export function nextAssistantTurn(
       quickReplies: [],
     };
   }
-  if (!state.objective) {
+  if (!state.productService) {
+    const clientPrefix = options.clientName
+      ? `Vamos montar uma campanha para ${options.clientName}. `
+      : '';
     return {
-      message:
-        'Qual é o principal objetivo da campanha: fortalecer a marca, lançar um produto ou promover uma oferta?',
-      quickReplies: ['Fortalecer a marca', 'Lançar um produto', 'Promover uma oferta'],
+      message: `${clientPrefix}Qual produto ou serviço você quer divulgar nesta campanha?`,
+      quickReplies: [],
     };
   }
   if (!state.audienceDescription) {

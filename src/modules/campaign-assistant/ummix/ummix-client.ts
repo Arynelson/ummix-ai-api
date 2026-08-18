@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   buildRationale,
   campaignLocations,
@@ -34,6 +35,7 @@ interface UmmixClientResponse {
 interface CityResponse {
   id: string;
   name: string;
+  is_active?: boolean;
   state?: { uf?: string | null };
 }
 
@@ -52,11 +54,17 @@ interface QuestionOptionResponse {
 
 interface QuestionResponse {
   id: string;
-  title: string;
+  title?: string;
+  label?: string;
   category?: string | null;
   options?: QuestionOptionResponse[];
   stage?: string;
   type?: string;
+  config?: {
+    originalExcelColumn?: string;
+    originalCategory?: string;
+    [key: string]: unknown;
+  } | null;
 }
 
 interface CalculationResponse {
@@ -82,10 +90,10 @@ export class UmmixApiError extends Error {
 export class UmmixClient {
   private cityCache: { expiresAt: number; cities: CityResponse[] } | null = null;
   private stateCache: { expiresAt: number; states: StateOption[] } | null = null;
-  private audienceCatalogCache: {
+  private audienceCatalogCache = new Map<string, {
     expiresAt: number;
     options: AudienceCatalogOption[];
-  } | null = null;
+  }>();
 
   constructor(private readonly baseUrl: string) {}
 
@@ -143,31 +151,46 @@ export class UmmixClient {
     cityName: string,
     stateUf: string | null,
   ): Promise<CampaignLocation | null> {
-    const cities = await this.getCities(token);
+    const cities = await this.getAvailableLocations(token);
     const wantedCity = normalize(cityName);
     const wantedUf = stateUf?.trim().toUpperCase() ?? null;
     const matches = cities.filter(
       (city) =>
-        normalize(city.name) === wantedCity &&
-        (!wantedUf || city.state?.uf?.toUpperCase() === wantedUf),
+        normalize(city.cityName) === wantedCity &&
+        (!wantedUf || city.stateUf === wantedUf),
     );
     if (matches.length !== 1) return null;
     const match = matches[0];
     if (!match) return null;
     return {
-      cityId: match.id,
-      cityName: match.name,
-      stateUf: match.state?.uf?.toUpperCase() ?? wantedUf,
+      cityId: match.cityId,
+      cityName: match.cityName,
+      stateUf: match.stateUf ?? wantedUf,
     };
   }
 
   async getAvailableLocations(token: string): Promise<CampaignLocation[]> {
-    const cities = await this.getCities(token);
-    return cities.map((city) => ({
-      cityId: city.id,
-      cityName: city.name,
-      stateUf: city.state?.uf?.toUpperCase() ?? null,
-    }));
+    const [cities, states] = await Promise.all([
+      this.getCities(token),
+      this.request<StateResponse[]>('/states?activeOnly=true&withResponses=false', token),
+    ]);
+    const activeStateUfs = new Set(
+      states
+        .filter((state) => state.is_active !== false)
+        .map((state) => state.uf.trim().toUpperCase()),
+    );
+    return cities
+      .filter(
+        (city) =>
+          city.is_active !== false &&
+          Boolean(city.state?.uf) &&
+          activeStateUfs.has(city.state?.uf?.trim().toUpperCase() ?? ''),
+      )
+      .map((city) => ({
+        cityId: city.id,
+        cityName: city.name,
+        stateUf: city.state?.uf?.toUpperCase() ?? null,
+      }));
   }
 
   async getAvailableStates(token: string): Promise<StateOption[]> {
@@ -199,11 +222,10 @@ export class UmmixClient {
   }
 
   async getAudienceCatalog(token: string): Promise<AudienceCatalogOption[]> {
-    if (
-      this.audienceCatalogCache &&
-      this.audienceCatalogCache.expiresAt > Date.now()
-    ) {
-      return this.audienceCatalogCache.options;
+    const cacheKey = createHash('sha256').update(token).digest('hex');
+    const cached = this.audienceCatalogCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.options;
     }
 
     const questions = await this.request<QuestionResponse[]>('/questions/user/active', token);
@@ -212,16 +234,23 @@ export class UmmixClient {
         .filter((option) => option.is_active !== false)
         .map((option) => ({
           questionId: question.id,
-          question: question.title,
+          question: question.title ?? question.label ?? '',
+          ...(question.config?.originalExcelColumn
+            ? { questionOriginal: question.config.originalExcelColumn }
+            : {}),
           category: question.category ?? null,
           optionId: option.id,
           option: option.text,
         })),
     );
-    this.audienceCatalogCache = {
+    this.audienceCatalogCache.set(cacheKey, {
       options,
-      expiresAt: Date.now() + 5 * 60 * 1000,
-    };
+      expiresAt: Date.now() + 60 * 1000,
+    });
+    if (this.audienceCatalogCache.size > 20) {
+      const oldestKey = this.audienceCatalogCache.keys().next().value;
+      if (oldestKey) this.audienceCatalogCache.delete(oldestKey);
+    }
     return options;
   }
 
@@ -405,7 +434,7 @@ export class UmmixClient {
 }
 
 function isAudienceQuestion(question: QuestionResponse): boolean {
-  const normalizedTitle = normalize(question.title);
+  const normalizedTitle = normalize(question.title ?? question.label ?? '');
   const choiceQuestion = !question.type ||
     ['single_choice', 'multiple_choice', 'radio_with_details'].includes(question.type);
   const flowQuestion =
@@ -435,19 +464,27 @@ function normalize(value: string): string {
     .toLocaleLowerCase('pt-BR');
 }
 
-function groupAudienceFilters(filters: AudienceFilterSelection[]) {
-  const grouped = new Map<string, { question: string; options: Set<string> }>();
+export function groupAudienceFilters(filters: AudienceFilterSelection[]) {
+  const grouped = new Map<
+    string,
+    { question: string; questionOriginal?: string; options: Set<string> }
+  >();
   for (const filter of filters) {
     const current = grouped.get(filter.questionId) ?? {
       question: filter.question,
       options: new Set<string>(),
     };
+    if (filter.questionOriginal && !current.questionOriginal) {
+      current.questionOriginal = filter.questionOriginal;
+    }
     current.options.add(filter.option);
     grouped.set(filter.questionId, current);
   }
   return [...grouped.values()].map((filter) => ({
     pergunta: filter.question,
-    perguntaOriginal: filter.question,
+    ...(filter.questionOriginal
+      ? { perguntaOriginal: filter.questionOriginal }
+      : { perguntaOriginal: filter.question }),
     opcoes: [...filter.options],
     operador: 'OR' as const,
   }));

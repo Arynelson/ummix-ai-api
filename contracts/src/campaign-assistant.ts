@@ -73,6 +73,8 @@ export interface AssistantStateOption {
 export interface AssistantAudienceFilter {
   questionId: string;
   question: string;
+  questionOriginal?: string;
+  category?: string | null;
   optionId: string;
   option: string;
 }
