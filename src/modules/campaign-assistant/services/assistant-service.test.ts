@@ -61,7 +61,7 @@ describe('AssistantService finalization', () => {
     expect(ummix.updateCampaign).not.toHaveBeenCalled();
   });
 
-  it('normalizes decimal reach and integer planning fields before the services patch', async () => {
+  it('keeps budget, reach, impressions and frequency coherent under a 66 insertion plan', async () => {
     const state = {
       ...initialState(100, 'varejo'),
       productService: 'Clínica',
@@ -78,19 +78,19 @@ describe('AssistantService finalization', () => {
       ],
       location: { cityId: 'city', cityName: 'Goiânia', stateUf: 'GO' },
       locations: [{ cityId: 'city', cityName: 'Goiânia', stateUf: 'GO' }],
-      maximumBudget: 1000,
+      maximumBudget: 5000,
       desiredStartDate: '2026-08-20',
       selectedChannel: 'radio' as const,
       comparison: {
         radio: {
           channel: 'radio' as const,
           available: true,
-          cpm: 20.123,
-          frequency: 2.6,
+          cpm: 42,
+          frequency: 66,
           periodWeeks: 3.4,
-          totalImpressions: 1000.6,
-          inventory: 999.4,
-          audienceImpacts: 1234.56,
+          totalImpressions: 119048,
+          inventory: 1804,
+          audienceImpacts: 57226,
           projectedLeads: 10.5,
           projectedSales: 1.2,
           reasonUnavailable: null,
@@ -174,10 +174,12 @@ describe('AssistantService finalization', () => {
       'redacted',
       '147dad44-1eea-411b-9b5d-1f6467d91712',
       expect.objectContaining({
-        audienceReach: 1235,
-        totalReach: 1235,
-        impressoesContratadas: 1001,
-        frequency: 3,
+        brandName: 'Clínica',
+        totalInvestment: 4997.92,
+        audienceReach: 1803,
+        totalReach: 1803,
+        impressoesContratadas: 118998,
+        frequency: 66,
         period: 3,
         targetAudience: expect.objectContaining({
           idadeFaixas: ['30-34'],
@@ -299,6 +301,109 @@ describe('AssistantService finalization', () => {
         optionId: '22222222-2222-4222-8222-222222222222',
         option: 'Feminino',
       },
+    ]);
+  });
+
+  it('provides the catalog when the current question is audience even without heuristic keywords', async () => {
+    const location = { cityId: 'city', cityName: 'Goiânia', stateUf: 'GO' };
+    const state = {
+      ...initialState(100, 'varejo', [location]),
+      productService: 'Consultoria',
+      objective: 'reconhecimento_marca' as const,
+      location,
+      locations: [location],
+    };
+    const session = {
+      id: '93203443-1fe8-45d0-a90d-8ec96ba8042f',
+      userId: '856918db-6f3d-4375-a95c-715177012cca',
+      userType: 'regular_client',
+      clientId: '7ed901e4-3adf-45f4-a60d-17908424045f',
+      clientSnapshot: {
+        id: '7ed901e4-3adf-45f4-a60d-17908424045f',
+        fullName: 'Cliente',
+        companyName: 'Empresa',
+        companyBrand: 'Marca',
+        businessActivity: 'varejo',
+        isActive: true,
+      },
+      status: 'collecting',
+      state,
+      messages: [],
+      finalizedCampaignId: null,
+      finalizedAt: null,
+      reviewReachedAt: null,
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      createdAt: '2026-08-18T00:00:00.000Z',
+      updatedAt: '2026-08-18T00:00:00.000Z',
+      version: 1,
+    } as AssistantSession;
+    const catalog = [{
+      questionId: '11111111-1111-4111-8111-111111111111',
+      question: 'Ocupação',
+      category: 'perfil',
+      optionId: '22222222-2222-4222-8222-222222222222',
+      option: 'Autônomo ou Profissional Liberal',
+    }];
+    let savedState = state;
+    const repository = {
+      findOwned: vi.fn().mockResolvedValue(session),
+      countRecentMessages: vi.fn().mockResolvedValue(0),
+      trackMetric: vi.fn().mockResolvedValue(undefined),
+      saveTurn: vi.fn().mockImplementation(async (input) => {
+        savedState = input.state;
+        return {
+          ...session,
+          state: input.state,
+          messages: input.messages,
+          version: 2,
+        };
+      }),
+    };
+    const ummix = { getAudienceCatalog: vi.fn().mockResolvedValue(catalog) };
+    const extractor = {
+      extract: vi.fn().mockResolvedValue({
+        productService: null,
+        objective: null,
+        audienceDescription: 'Empresários e profissionais liberais',
+        audienceFilters: [{
+          questionId: catalog[0]!.questionId,
+          optionId: catalog[0]!.optionId,
+          confidence: 0.96,
+        }],
+        cityName: null,
+        stateUf: null,
+        maximumBudget: null,
+        desiredStartDate: null,
+        selectedChannel: null,
+      }),
+    };
+    const service = new AssistantService(
+      config,
+      repository as never,
+      ummix as never,
+      extractor as never,
+    );
+
+    await service.sendMessage({
+      id: session.id,
+      token: 'redacted',
+      user: {
+        id: session.userId,
+        fullName: 'Cliente',
+        role: 'user',
+        userType: 'regular_client',
+      },
+      message: 'Empresários e profissionais liberais',
+    });
+
+    expect(extractor.extract).toHaveBeenCalledWith(
+      expect.objectContaining({ audienceCatalog: catalog, currentField: 'audienceDescription' }),
+    );
+    expect(savedState.audienceFilters).toEqual([
+      expect.objectContaining({
+        question: 'Ocupação',
+        option: 'Autônomo ou Profissional Liberal',
+      }),
     ]);
   });
 });

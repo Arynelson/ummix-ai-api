@@ -204,6 +204,12 @@ export function nextAssistantTurn(
     };
   }
   if (!state.productService) {
+    if (state.objective === 'reconhecimento_marca') {
+      return {
+        message: 'Qual o nome da marca que deseja divulgar?',
+        quickReplies: [],
+      };
+    }
     const clientPrefix = options.clientName
       ? `Vamos montar uma campanha para ${options.clientName}. `
       : '';

@@ -6,6 +6,7 @@ import {
   type AudienceCatalogOption,
   type CampaignState,
   type ExtractedCampaignPatch,
+  type MissingField,
 } from '../domain/types.js';
 
 const extractionSchema = z.object({
@@ -89,6 +90,8 @@ export class CampaignBriefExtractor {
     currentState: CampaignState;
     userId: string;
     audienceCatalog?: AudienceCatalogOption[];
+    currentField?: MissingField | null;
+    referenceDate?: string;
   }): Promise<ExtractedCampaignPatch> {
     if (!this.apiKey?.trim()) {
       throw new OpenAIUnavailableError('OPENAI_API_KEY não configurada');
@@ -125,10 +128,12 @@ export class CampaignBriefExtractor {
             'Quando a mensagem descrever o público, classifique somente opções presentes no audienceCatalog, retornando os IDs exatos questionId e optionId e uma confiança de 0 a 1.',
             'Não invente IDs, perguntas ou opções. Se não houver correspondência segura, retorne audienceFilters vazio.',
             'Converta valores monetários brasileiros para número e datas relativas para YYYY-MM-DD usando a data de referência.',
+            'Use currentField como contexto da resposta: em maximumBudget, um número isolado está em reais brasileiros; em desiredStartDate, urgência significa a data calculada pelo backend.',
             'Nunca invente cidade, categoria, preço, audiência, frequência, período ou alcance.',
           ].join(' '),
           input: JSON.stringify({
-            referenceDate: new Date().toISOString().slice(0, 10),
+            referenceDate: input.referenceDate ?? new Date().toISOString().slice(0, 10),
+            currentField: input.currentField ?? null,
             currentState: input.currentState,
             audienceCatalog: input.audienceCatalog ?? [],
             userMessage: input.message,

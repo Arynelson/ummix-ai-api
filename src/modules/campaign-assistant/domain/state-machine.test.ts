@@ -78,10 +78,22 @@ describe('campaign assistant state machine', () => {
       locations: [option],
     };
     const productTurn = nextAssistantTurn(afterCity, { clientName: 'Empresa' });
-    expect(productTurn.message).toBe(
+    expect(productTurn.message).toBe('Qual o nome da marca que deseja divulgar?');
+    expect(productTurn.quickReplies).toEqual([]);
+  });
+
+  it('asks for product or service when the objective is not brand recognition', () => {
+    const option = { cityId: 'city', cityName: 'Goiânia', stateUf: 'GO' };
+    const state = {
+      ...initialState(100, 'varejo', [option]),
+      objective: 'promocao_oferta' as const,
+      location: option,
+      locations: [option],
+    };
+
+    expect(nextAssistantTurn(state, { clientName: 'Empresa' }).message).toBe(
       'Vamos montar uma campanha para Empresa. Qual produto ou serviço você quer divulgar nesta campanha?',
     );
-    expect(productTurn.quickReplies).toEqual([]);
   });
 
   it('does not calculate the channel comparison before audience and start date', () => {

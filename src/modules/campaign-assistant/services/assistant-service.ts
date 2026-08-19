@@ -24,6 +24,10 @@ import {
   OpenAIUnavailableError,
 } from '../openai/extractor.js';
 import { mapAudienceFiltersToTargetAudience } from '../domain/audience-filter-mapper.js';
+import {
+  currentDateInBrazil,
+  normalizeContextualPatch,
+} from '../domain/contextual-input.js';
 import { UmmixClient, type UmmixUser } from '../ummix/ummix-client.js';
 
 export interface SessionView {
@@ -163,12 +167,25 @@ export class AssistantService {
       const fullAudienceCatalog = await this.ummix
         .getAudienceCatalog(input.token)
         .catch(() => [] as AudienceCatalogOption[]);
-      const audienceCatalog = selectAudienceCatalog(input.message, fullAudienceCatalog);
-      const patch = await this.extractor.extract({
+      const currentField = missingFields(nextState)[0] ?? null;
+      const referenceDate = currentDateInBrazil();
+      const audienceCatalog = selectAudienceCatalog(
+        input.message,
+        fullAudienceCatalog,
+        currentField === 'audienceDescription',
+      );
+      const extractedPatch = await this.extractor.extract({
         message: input.message,
-        currentState: session.state,
+        currentState: nextState,
         userId: input.user.id,
         audienceCatalog,
+        currentField,
+        referenceDate,
+      });
+      const patch = normalizeContextualPatch(extractedPatch, {
+        message: input.message,
+        currentField,
+        referenceDate,
       });
       nextState = applyExtractedPatch(
         nextState,
@@ -502,14 +519,18 @@ function buildCampaignPayload(
     ),
   ];
   const audienceFilters = state.audienceFilters ?? [];
+  const contractedPlan = contractPlanToBudget(state.maximumBudget, plan);
 
   return {
     campaignName: campaignName(state),
-    brandName: session.clientSnapshot.companyBrand ?? session.clientSnapshot.companyName ?? undefined,
+    brandName:
+      state.objective === 'reconhecimento_marca'
+        ? state.productService
+        : session.clientSnapshot.companyBrand ?? session.clientSnapshot.companyName ?? undefined,
     objective: state.objective,
     startDate: state.desiredStartDate,
     endDate: addPeriod(state.desiredStartDate, periodWeeks),
-    totalInvestment: state.maximumBudget,
+    totalInvestment: contractedPlan.totalInvestment,
     targetAudience: {
       description: state.audienceDescription,
       cidade: primaryLocation.cityName,
@@ -525,7 +546,7 @@ function buildCampaignPayload(
     },
     mediaChannel: channel,
     ...(channel === 'radio' ? { spotDurationRadio: '15' } : { spotDurationTv: '15' }),
-    audienceReach: toNonNegativeInteger(plan.audienceImpacts ?? plan.inventory),
+    audienceReach: contractedPlan.totalReach,
     baseCpm: plan.cpm ?? 0,
     finalCpm: plan.cpm ?? 0,
     clientId: session.clientId,
@@ -537,12 +558,44 @@ function buildCampaignPayload(
       durationSeconds: state.durationSeconds,
       comparison: state.comparison,
     },
-    impressoesContratadas: toNonNegativeInteger(plan.totalImpressions),
+    impressoesContratadas: contractedPlan.totalImpressions,
     brandStrength: state.brandStrength,
     format: channel === 'radio' ? 'spot' : 'vt',
-    frequency: Math.max(1, toNonNegativeInteger(plan.frequency, 1)),
+    frequency: contractedPlan.frequency,
     period: Math.max(1, toNonNegativeInteger(periodWeeks, 1)),
-    totalReach: toNonNegativeInteger(plan.audienceImpacts ?? plan.inventory),
+    totalReach: contractedPlan.totalReach,
+  };
+}
+
+function contractPlanToBudget(
+  maximumBudget: number,
+  plan: NonNullable<CampaignState['comparison']>['radio'],
+): {
+  frequency: number;
+  totalReach: number;
+  totalImpressions: number;
+  totalInvestment: number;
+} {
+  const frequency = Math.max(1, toNonNegativeInteger(plan.frequency, 1));
+  const cpm = Number(plan.cpm ?? 0);
+  if (!(cpm > 0) || !Number.isFinite(cpm)) {
+    throw new AssistantHttpError(422, 'Plano de mídia sem CPM válido');
+  }
+
+  const budget = Math.max(0, maximumBudget);
+  const reachByBudget = Math.floor((budget * 1000) / (cpm * frequency));
+  const availableAudience = Math.floor(
+    Math.max(0, Number(plan.audienceImpacts ?? plan.inventory ?? 0)),
+  );
+  const totalReach = Math.min(reachByBudget, availableAudience);
+  const totalImpressions = totalReach * frequency;
+  const calculatedInvestment = Math.round((totalImpressions * cpm) / 10) / 100;
+
+  return {
+    frequency,
+    totalReach,
+    totalImpressions,
+    totalInvestment: Math.min(budget, calculatedInvestment),
   };
 }
 
@@ -593,8 +646,9 @@ function dedupeAudienceFilters(filters: AudienceFilterSelection[]): AudienceFilt
 function selectAudienceCatalog(
   message: string,
   catalog: AudienceCatalogOption[],
+  forceForCurrentQuestion = false,
 ): AudienceCatalogOption[] {
-  if (!mentionsAudience(message)) return [];
+  if (!forceForCurrentQuestion && !mentionsAudience(message)) return [];
 
   const terms = tokenize(message);
   const dimensionPattern = /sexo|gener|idade|faixa|renda|escolar|ocup|regi|filh|relig|ra[cç]a|cor/i;
@@ -611,6 +665,18 @@ function selectAudienceCatalog(
     })
     .filter((item) => item.score > 0)
     .sort((left, right) => right.score - left.score);
+
+  if (forceForCurrentQuestion) {
+    const rankedIds = new Set(
+      ranked.map((item) => `${item.option.questionId}:${item.option.optionId}`),
+    );
+    return [
+      ...ranked.map((item) => item.option),
+      ...catalog.filter(
+        (option) => !rankedIds.has(`${option.questionId}:${option.optionId}`),
+      ),
+    ].slice(0, 400);
+  }
 
   return (ranked.length > 0 ? ranked.map((item) => item.option) : catalog).slice(0, 400);
 }
