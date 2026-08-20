@@ -34,7 +34,30 @@ export async function registerPlatformAuth(
 
   await app.register(
     async (scoped) => {
+      // The current legacy frontend sends this request with
+      // Content-Type: application/json but without a body. Fastify's default
+      // parser rejects that combination before the handler runs, so accept an
+      // empty body only in this bodyless create route. Other JSON routes keep
+      // their default parser and validation.
+      scoped.addContentTypeParser(
+        'application/json',
+        { parseAs: 'string' },
+        (_request, body, done) => {
+          if (body.length === 0) {
+            done(null, {});
+            return;
+          }
+          done(new HandoffError('O endpoint de handoff não aceita corpo', 400));
+        },
+      );
       scoped.post('/handoff', createHandler);
+      scoped.setErrorHandler(platformAuthErrorHandler);
+    },
+    { prefix: '/api/auth' },
+  );
+
+  await app.register(
+    async (scoped) => {
       scoped.post('/handoff/exchange', exchangeHandler);
       scoped.setErrorHandler(platformAuthErrorHandler);
     },

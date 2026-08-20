@@ -108,4 +108,66 @@ describe('platform health', () => {
       await app.close();
     }
   });
+
+  it('accepts bodyless JSON handoff requests from the legacy frontend', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [], rowCount: 1 });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ id: 'user-1', email: 'user@example.com' }),
+    }));
+    const app = await buildApp(config, { query } as unknown as Pool);
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/auth/handoff',
+        headers: {
+          authorization: 'Bearer user-access-token',
+          'content-type': 'application/json',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        handoffToken: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        expiresIn: 60,
+      });
+
+      const chunkedResponse = await app.inject({
+        method: 'POST',
+        url: '/api/auth/handoff',
+        headers: {
+          authorization: 'Bearer user-access-token',
+          'content-type': 'application/json',
+          'transfer-encoding': 'chunked',
+        },
+        payload: '',
+      });
+
+      expect(chunkedResponse.statusCode).toBe(200);
+      expect(chunkedResponse.json()).toEqual({
+        handoffToken: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        expiresIn: 60,
+      });
+
+      const nonEmptyResponse = await app.inject({
+        method: 'POST',
+        url: '/api/auth/handoff',
+        headers: {
+          authorization: 'Bearer user-access-token',
+          'content-type': 'application/json',
+        },
+        payload: '{}',
+      });
+
+      expect(nonEmptyResponse.statusCode).toBe(400);
+      expect(nonEmptyResponse.json()).toEqual({
+        message: 'O endpoint de handoff não aceita corpo',
+      });
+      expect(query).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+      await app.close();
+    }
+  });
 });
