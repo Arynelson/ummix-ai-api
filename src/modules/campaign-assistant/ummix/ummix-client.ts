@@ -437,11 +437,12 @@ function isAudienceQuestion(question: QuestionResponse): boolean {
   const normalizedTitle = normalize(question.title ?? question.label ?? '');
   const choiceQuestion = !question.type ||
     ['single_choice', 'multiple_choice', 'radio_with_details'].includes(question.type);
-  const flowQuestion =
-    question.stage === 'campaign_creation' ||
-    /estado|cidade|pra[cç]a|canal|r[aá]dio|tv|formato|dura[cç][aã]o|investimento|or[cç]amento|objetivo/i.test(
-      normalizedTitle,
-    );
+  // As perguntas de Perfil & Hábitos também usam `campaign_creation` no
+  // Services. O stage, sozinho, não distingue perguntas operacionais das
+  // perguntas que devem ser entregues ao LLM para classificar a audiência.
+  const flowQuestion = /estado|cidade|pra[cç]a|canal|r[aá]dio|tv|formato|dura[cç][aã]o|investimento|or[cç]amento|objetivo/i.test(
+    normalizedTitle,
+  );
   return choiceQuestion && !flowQuestion;
 }
 
