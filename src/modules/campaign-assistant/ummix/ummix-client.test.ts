@@ -1,7 +1,38 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { groupAudienceFilters, UmmixClient } from './ummix-client.js';
+import type { CampaignState } from '../domain/types.js';
+import {
+  buildAudienceDemographics,
+  groupAudienceFilters,
+  UmmixClient,
+} from './ummix-client.js';
 
 describe('Ummix audience impact payload', () => {
+  it('materializes catalog gender and age filters in native demographic fields', () => {
+    expect(
+      buildAudienceDemographics({
+        locations: [{ cityId: 'city-id', cityName: 'Goiânia', stateUf: 'GO' }],
+        audienceFilters: [
+          {
+            questionId: 'gender-question',
+            question: 'Gênero',
+            optionId: 'female',
+            option: 'Feminino',
+          },
+          {
+            questionId: 'age-question',
+            question: 'Faixa etária',
+            optionId: 'age-30-34',
+            option: '30-34',
+          },
+        ],
+      } as CampaignState),
+    ).toEqual({
+      cidade: ['city-id'],
+      sexo: ['Feminino'],
+      faixasEtarias: [{ min: 30, max: 34 }],
+    });
+  });
+
   it('uses the original services question while retaining the friendly label', () => {
     expect(
       groupAudienceFilters([

@@ -42,6 +42,7 @@ export interface AssistantCampaignState {
   locationOptions?: AssistantLocation[];
   stateOptions?: AssistantStateOption[];
   audienceFilters?: AssistantAudienceFilter[];
+  audienceClarification?: AssistantAudienceClarification | null;
   unresolvedLocation: string | null;
   maximumBudget: number | null;
   desiredStartDate: string | null;
@@ -77,6 +78,17 @@ export interface AssistantAudienceFilter {
   category?: string | null;
   optionId: string;
   option: string;
+}
+
+export interface AssistantAudienceClarificationOption {
+  id: string;
+  label: string;
+  filters: AssistantAudienceFilter[];
+}
+
+export interface AssistantAudienceClarification {
+  prompt: string;
+  options: AssistantAudienceClarificationOption[];
 }
 
 export interface AssistantChatMessage {

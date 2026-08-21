@@ -15,6 +15,7 @@ import type {
   MediaPlan,
   StateOption,
 } from '../domain/types.js';
+import { mapAudienceFiltersToTargetAudience } from '../domain/audience-filter-mapper.js';
 
 export interface UmmixUser {
   id: string;
@@ -388,9 +389,7 @@ export class UmmixClient {
       {
         method: 'POST',
         body: JSON.stringify({
-          demograficos: {
-            cidade: campaignLocations(state).map((location) => location.cityId),
-          },
+          demograficos: buildAudienceDemographics(state),
           respostas: groupAudienceFilters(state.audienceFilters ?? []),
           mediaChannel: channel,
         }),
@@ -489,4 +488,35 @@ export function groupAudienceFilters(filters: AudienceFilterSelection[]) {
     opcoes: [...filter.options],
     operador: 'OR' as const,
   }));
+}
+
+export function buildAudienceDemographics(state: CampaignState) {
+  const targetAudience = mapAudienceFiltersToTargetAudience(state.audienceFilters ?? []);
+  const genderValues = Array.isArray(targetAudience.gender)
+    ? targetAudience.gender.map(String)
+    : typeof targetAudience.gender === 'string'
+      ? [targetAudience.gender]
+      : [];
+  const ageRanges = Array.isArray(targetAudience.idadeFaixas)
+    ? targetAudience.idadeFaixas
+        .map((value) => parseAudienceAgeRange(String(value)))
+        .filter((range): range is { min: number; max: number } => Boolean(range))
+    : [];
+
+  return {
+    cidade: campaignLocations(state).map((location) => location.cityId),
+    ...(genderValues.length > 0 ? { sexo: [...new Set(genderValues)] } : {}),
+    ...(ageRanges.length > 0 ? { faixasEtarias: ageRanges } : {}),
+  };
+}
+
+function parseAudienceAgeRange(value: string): { min: number; max: number } | null {
+  const numbers = value.match(/\d+/g)?.map(Number) ?? [];
+  if (numbers.length >= 2 && numbers[0] !== undefined && numbers[1] !== undefined) {
+    return { min: numbers[0], max: numbers[1] };
+  }
+  if (numbers.length === 1 && numbers[0] !== undefined && /\+/.test(value)) {
+    return { min: numbers[0], max: 99 };
+  }
+  return null;
 }

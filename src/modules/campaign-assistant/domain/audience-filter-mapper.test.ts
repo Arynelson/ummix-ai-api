@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { mapAudienceFiltersToTargetAudience } from './audience-filter-mapper.js';
+import {
+  inferNaturalAudienceFilters,
+  mapAudienceFiltersToTargetAudience,
+} from './audience-filter-mapper.js';
 
 describe('audience filter mapper', () => {
   it('maps catalog answers to the canonical Perfil & Hábitos fields', () => {
@@ -57,6 +60,48 @@ describe('audience filter mapper', () => {
         answers: ['Estudante'],
       },
     ]);
+  });
+
+  it('infers gender and all catalog age ranges below a natural-language limit', () => {
+    const result = inferNaturalAudienceFilters('Mulheres com menos de 40 anos', [
+      {
+        questionId: 'gender-question',
+        question: 'Gênero',
+        category: 'perfil_habitos',
+        optionId: 'female-option',
+        option: 'Feminino',
+      },
+      ...['15-20', '21-24', '25-29', '30-34', '35-39', '40-44'].map((option) => ({
+        questionId: 'age-question',
+        question: 'Faixa etária',
+        category: 'perfil_habitos',
+        optionId: `age-${option}`,
+        option,
+      })),
+    ]);
+
+    expect(result.map((filter) => filter.option)).toEqual([
+      'Feminino',
+      '15-20',
+      '21-24',
+      '25-29',
+      '30-34',
+      '35-39',
+    ]);
+  });
+
+  it('does not invent filters when the catalog has no matching options', () => {
+    expect(
+      inferNaturalAudienceFilters('Mulheres com menos de 40 anos', [
+        {
+          questionId: 'age-question',
+          question: 'Faixa etária',
+          category: 'perfil_habitos',
+          optionId: 'age-40',
+          option: '40-44',
+        },
+      ]),
+    ).toEqual([]);
   });
 
   it('keeps a catalog option in selections even when no UI field mapping exists', () => {

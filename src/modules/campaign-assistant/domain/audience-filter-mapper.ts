@@ -1,4 +1,4 @@
-import type { AudienceFilterSelection } from './types.js';
+import type { AudienceCatalogOption, AudienceFilterSelection } from './types.js';
 
 type AudienceField =
   | 'filhos'
@@ -149,7 +149,71 @@ export function mapAudienceFiltersToTargetAudience(
   return target;
 }
 
-function resolveAudienceField(filter: AudienceFilterSelection): AudienceField | null {
+/**
+ * Provides a conservative deterministic fallback for common natural-language
+ * expressions. The LLM remains the primary classifier; this fallback can only
+ * return options already present in the remote catalog.
+ */
+export function inferNaturalAudienceFilters(
+  message: string,
+  catalog: AudienceCatalogOption[],
+): AudienceFilterSelection[] {
+  const normalizedMessage = normalize(message);
+  const wantsFemale = /\b(mulher|mulheres|feminina|feminino|femininas|femininos)\b/.test(
+    normalizedMessage,
+  );
+  const wantsMale = /\b(homem|homens|masculina|masculino|masculinas|masculinos)\b/.test(
+    normalizedMessage,
+  );
+  const ageConstraint = parseAgeConstraint(normalizedMessage);
+  if (!wantsFemale && !wantsMale && !ageConstraint) return [];
+
+  const inferred: AudienceFilterSelection[] = [];
+  for (const option of catalog) {
+    const field = resolveAudienceField(option);
+    const optionText = normalize(option.option);
+
+    if (
+      field === 'gender' &&
+      ((wantsFemale && /femin|mulher/.test(optionText)) ||
+        (wantsMale && /mascul|homem/.test(optionText)))
+    ) {
+      inferred.push({
+        questionId: option.questionId,
+        question: option.question,
+        ...(option.questionOriginal ? { questionOriginal: option.questionOriginal } : {}),
+        ...(option.category !== undefined ? { category: option.category } : {}),
+        optionId: option.optionId,
+        option: option.option,
+      });
+      continue;
+    }
+
+    if (field === 'idadeFaixas' && ageConstraint) {
+      const range = parseAgeRange(option.option);
+      const matches =
+        ageConstraint.mode === 'lessThan'
+          ? Boolean(range && range.max < ageConstraint.value)
+          : Boolean(range && range.min > ageConstraint.value);
+      if (matches) {
+        inferred.push({
+          questionId: option.questionId,
+          question: option.question,
+          ...(option.questionOriginal ? { questionOriginal: option.questionOriginal } : {}),
+          ...(option.category !== undefined ? { category: option.category } : {}),
+          optionId: option.optionId,
+          option: option.option,
+        });
+      }
+    }
+  }
+
+  return dedupeSelections(inferred);
+}
+
+function resolveAudienceField(
+  filter: Pick<AudienceFilterSelection, 'question' | 'questionOriginal'>,
+): AudienceField | null {
   const searchable = normalize(`${filter.question} ${filter.questionOriginal ?? ''}`);
 
   if (/dia.*semana|segunda|terca|quarta|quinta|sexta|sabado|domingo/.test(searchable)) {
@@ -281,6 +345,43 @@ function parseNumbers(value: string): number[] {
   return (value.match(/\d+(?:[.,]\d{3})*/g) ?? [])
     .map((item) => Number(item.replace(/\./g, '').replace(',', '.')))
     .filter((item) => Number.isFinite(item));
+}
+
+function parseAgeConstraint(
+  value: string,
+): { mode: 'lessThan' | 'greaterThan'; value: number } | null {
+  const lessThan = value.match(/(?:menos|abaixo|inferior)\s*(?:de)?\s*(\d{2})/);
+  if (lessThan?.[1]) {
+    return { mode: 'lessThan', value: Number(lessThan[1]) };
+  }
+  const atMost = value.match(/ate\s*(?:os|as)?\s*(\d{2})/);
+  if (atMost?.[1]) {
+    return { mode: 'lessThan', value: Number(atMost[1]) + 1 };
+  }
+  const greaterThan = value.match(/(?:mais|acima|superior)\s*(?:de)?\s*(\d{2})/);
+  if (greaterThan?.[1]) {
+    return { mode: 'greaterThan', value: Number(greaterThan[1]) };
+  }
+  return null;
+}
+
+function parseAgeRange(value: string): { min: number; max: number } | null {
+  const numbers = parseNumbers(value);
+  if (numbers.length >= 2) {
+    return { min: numbers[0]!, max: numbers[1]! };
+  }
+  if (numbers.length === 1 && /\+/.test(value)) {
+    return { min: numbers[0]!, max: 99 };
+  }
+  return null;
+}
+
+function dedupeSelections(filters: AudienceFilterSelection[]): AudienceFilterSelection[] {
+  const unique = new Map<string, AudienceFilterSelection>();
+  for (const filter of filters) {
+    unique.set(`${filter.questionId}:${filter.optionId}`, filter);
+  }
+  return [...unique.values()];
 }
 
 function normalize(value: string): string {

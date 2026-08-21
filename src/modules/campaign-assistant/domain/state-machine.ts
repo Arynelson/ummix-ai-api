@@ -31,6 +31,7 @@ export function initialState(
     locationOptions,
     stateOptions,
     audienceFilters: [],
+    audienceClarification: null,
     unresolvedLocation: null,
     maximumBudget: null,
     desiredStartDate: null,
@@ -56,9 +57,31 @@ export function applyExtractedPatch(
   if (patch.productService?.trim()) next.productService = patch.productService.trim().slice(0, 240);
   if (patch.audienceDescription?.trim()) {
     next.audienceDescription = patch.audienceDescription.trim().slice(0, 500);
-    if (patch.audienceFilters !== undefined) {
-      next.audienceFilters = patch.audienceFilters ?? [];
+    if (
+      (!patch.audienceAlternatives || patch.audienceAlternatives.length < 2) &&
+      patch.audienceFilters &&
+      patch.audienceFilters.length > 0
+    ) {
+      next.audienceFilters = mergeAudienceFilters(next.audienceFilters ?? [], patch.audienceFilters);
     }
+    if (patch.audienceAlternatives && patch.audienceAlternatives.length >= 2) {
+      next.audienceClarification = {
+        prompt:
+          'Encontrei duas formas possíveis de interpretar esse público. Qual delas representa melhor o que você deseja alcançar?',
+        options: patch.audienceAlternatives.slice(0, 2),
+      };
+    } else if (patch.audienceFilters && patch.audienceFilters.length > 0) {
+      next.audienceClarification = null;
+    } else {
+      next.audienceClarification = {
+        prompt:
+          'Não consegui associar seu público a filtros com segurança. Descreva um pouco melhor a idade, o gênero ou outro perfil que deseja alcançar.',
+        options: [],
+      };
+    }
+  } else if (patch.audienceFilters && patch.audienceFilters.length > 0) {
+    next.audienceFilters = mergeAudienceFilters(next.audienceFilters ?? [], patch.audienceFilters);
+    next.audienceClarification = null;
   }
   if (patch.objective && OBJECTIVES.includes(patch.objective)) next.objective = patch.objective;
   if (selectedChannelFromPatch) next.selectedChannel = selectedChannelFromPatch;
@@ -88,7 +111,9 @@ export function applyExtractedPatch(
     current.audienceDescription !== next.audienceDescription ||
     current.desiredStartDate !== next.desiredStartDate ||
     JSON.stringify(current.audienceFilters ?? []) !==
-      JSON.stringify(next.audienceFilters ?? [])
+      JSON.stringify(next.audienceFilters ?? []) ||
+    JSON.stringify(current.audienceClarification ?? null) !==
+      JSON.stringify(next.audienceClarification ?? null)
   ) {
     next.comparison = null;
     // Se a mesma mensagem mudou dados e confirmou um canal, a confirmação
@@ -105,6 +130,7 @@ export function missingFields(state: CampaignState): MissingField[] {
   if (campaignLocations(state).length === 0) missing.push('location');
   if (!state.productService) missing.push('productService');
   if (!state.audienceDescription) missing.push('audienceDescription');
+  if (state.audienceClarification) missing.push('audienceConfirmation');
   if (state.maximumBudget === null || state.maximumBudget < state.minimumInvestment) {
     missing.push('maximumBudget');
   }
@@ -125,6 +151,7 @@ export function canCalculateComparison(state: CampaignState): boolean {
     state.objective &&
     campaignLocations(state).length > 0 &&
     state.audienceDescription &&
+    !state.audienceClarification &&
     state.category &&
     state.maximumBudget !== null &&
     state.maximumBudget >= state.minimumInvestment &&
@@ -224,6 +251,12 @@ export function nextAssistantTurn(
       quickReplies: [],
     };
   }
+  if (state.audienceClarification) {
+    return {
+      message: state.audienceClarification.prompt,
+      quickReplies: [],
+    };
+  }
   if (state.maximumBudget === null) {
     return {
       message: 'Qual é o orçamento máximo da campanha? Vou tratá-lo como um teto rígido.',
@@ -287,4 +320,21 @@ function formatCurrency(value: number | null): string {
 export function campaignLocations(state: CampaignState): CampaignLocation[] {
   if (state.locations?.length) return state.locations;
   return state.location ? [state.location] : [];
+}
+
+function mergeAudienceFilters(
+  current: import('./types.js').AudienceFilterSelection[],
+  incoming: import('./types.js').AudienceFilterSelection[],
+): import('./types.js').AudienceFilterSelection[] {
+  const replacedQuestions = new Set(incoming.map((filter) => filter.questionId));
+  const unique = new Map<string, import('./types.js').AudienceFilterSelection>();
+  for (const filter of current) {
+    if (!replacedQuestions.has(filter.questionId)) {
+      unique.set(`${filter.questionId}:${filter.optionId}`, filter);
+    }
+  }
+  for (const filter of incoming) {
+    unique.set(`${filter.questionId}:${filter.optionId}`, filter);
+  }
+  return [...unique.values()];
 }

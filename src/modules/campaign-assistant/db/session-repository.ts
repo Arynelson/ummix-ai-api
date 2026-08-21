@@ -186,6 +186,7 @@ export class SessionRepository {
       | 'proposal_ready'
       | 'draft_created'
       | 'review_reached'
+      | 'audience_clarification_confirmed'
       | 'manual_fallback'
       | 'error';
     metadata?: Record<string, string | number | boolean | null>;

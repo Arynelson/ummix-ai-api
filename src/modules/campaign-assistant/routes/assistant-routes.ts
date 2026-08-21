@@ -17,6 +17,9 @@ const messageSchema = z.object({ message: z.string().trim().min(1).max(2000) });
 const locationSelectionSchema = z.object({
   cityIds: z.array(z.string().uuid()).min(1).max(10),
 });
+const audienceClarificationSchema = z.object({
+  alternativeId: z.string().trim().min(1).max(80),
+});
 
 export async function assistantRoutes(
   app: FastifyInstance,
@@ -91,6 +94,18 @@ export async function assistantRoutes(
     return options.assistant.selectLocations({
       id,
       cityIds,
+      token: request.assistantAuth.token,
+      user: request.assistantAuth.user,
+    });
+  });
+
+  app.post('/sessions/:id/audience/clarification', async (rawRequest) => {
+    const request = rawRequest as AuthenticatedRequest;
+    const { id } = idParamsSchema.parse(rawRequest.params);
+    const { alternativeId } = audienceClarificationSchema.parse(rawRequest.body);
+    return options.assistant.confirmAudienceClarification({
+      id,
+      alternativeId,
       token: request.assistantAuth.token,
       user: request.assistantAuth.user,
     });

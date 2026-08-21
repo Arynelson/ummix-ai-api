@@ -53,6 +53,22 @@ export interface AudienceFilterCandidate {
   confidence: number;
 }
 
+export interface AudienceAlternativeCandidate {
+  audienceFilters: AudienceFilterCandidate[];
+  confidence: number;
+}
+
+export interface AudienceClarificationOption {
+  id: string;
+  label: string;
+  filters: AudienceFilterSelection[];
+}
+
+export interface AudienceClarification {
+  prompt: string;
+  options: AudienceClarificationOption[];
+}
+
 export interface AudienceCatalogOption {
   questionId: string;
   question: string;
@@ -92,6 +108,7 @@ export interface CampaignState {
   locationOptions?: CampaignLocation[];
   stateOptions?: StateOption[];
   audienceFilters?: AudienceFilterSelection[];
+  audienceClarification?: AudienceClarification | null;
   unresolvedLocation: string | null;
   maximumBudget: number | null;
   desiredStartDate: string | null;
@@ -141,6 +158,7 @@ export interface ExtractedCampaignPatch {
   objective: CampaignObjective | null;
   audienceDescription: string | null;
   audienceFilters?: AudienceFilterCandidate[] | null;
+  audienceAlternatives?: AudienceAlternativeCandidate[] | null;
   cityName: string | null;
   stateUf: string | null;
   maximumBudget: number | null;
@@ -149,8 +167,9 @@ export interface ExtractedCampaignPatch {
 }
 
 export interface ValidatedCampaignPatch
-  extends Omit<ExtractedCampaignPatch, 'audienceFilters'> {
+  extends Omit<ExtractedCampaignPatch, 'audienceFilters' | 'audienceAlternatives'> {
   audienceFilters?: AudienceFilterSelection[] | null;
+  audienceAlternatives?: AudienceClarificationOption[] | null;
 }
 
 export type MissingField =
@@ -158,6 +177,7 @@ export type MissingField =
   | 'objective'
   | 'location'
   | 'audienceDescription'
+  | 'audienceConfirmation'
   | 'maximumBudget'
   | 'desiredStartDate'
   | 'category'

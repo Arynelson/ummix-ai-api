@@ -12,6 +12,7 @@ import {
 import type {
   AssistantSession,
   AudienceCatalogOption,
+  AudienceClarificationOption,
   AudienceFilterSelection,
   CampaignState,
   ChatMessage,
@@ -23,7 +24,10 @@ import {
   CampaignBriefExtractor,
   OpenAIUnavailableError,
 } from '../openai/extractor.js';
-import { mapAudienceFiltersToTargetAudience } from '../domain/audience-filter-mapper.js';
+import {
+  inferNaturalAudienceFilters,
+  mapAudienceFiltersToTargetAudience,
+} from '../domain/audience-filter-mapper.js';
 import {
   currentDateInBrazil,
   normalizeContextualPatch,
@@ -164,34 +168,63 @@ export class AssistantService {
     }
     let fallbackToManual = false;
     try {
-      const fullAudienceCatalog = await this.ummix
-        .getAudienceCatalog(input.token)
-        .catch(() => [] as AudienceCatalogOption[]);
-      const currentField = missingFields(nextState)[0] ?? null;
-      const referenceDate = currentDateInBrazil();
-      const audienceCatalog = selectAudienceCatalog(
+      const selectedAudienceAlternative = resolveAudienceClarification(
         input.message,
-        fullAudienceCatalog,
-        currentField === 'audienceDescription',
+        nextState.audienceClarification,
       );
-      const extractedPatch = await this.extractor.extract({
-        message: input.message,
-        currentState: nextState,
-        userId: input.user.id,
-        audienceCatalog,
-        currentField,
-        referenceDate,
-      });
-      const patch = normalizeContextualPatch(extractedPatch, {
-        message: input.message,
-        currentField,
-        referenceDate,
-      });
-      nextState = applyExtractedPatch(
-        nextState,
-        validateAudiencePatch(patch, audienceCatalog),
-      );
-      nextState = await this.resolveLocationIfPresent(input.token, nextState, patch);
+      if (selectedAudienceAlternative) {
+        nextState = {
+          ...nextState,
+          audienceFilters: mergeAudienceFilters(
+            nextState.audienceFilters ?? [],
+            selectedAudienceAlternative.filters,
+          ),
+          audienceClarification: null,
+          comparison: null,
+          selectedChannel: null,
+        };
+      } else {
+        const fullAudienceCatalog = await this.ummix
+          .getAudienceCatalog(input.token)
+          .catch(() => [] as AudienceCatalogOption[]);
+        const currentField = nextState.audienceClarification
+          ? 'audienceConfirmation'
+          : missingFields(nextState)[0] ?? null;
+        const referenceDate = currentDateInBrazil();
+        const audienceCatalog = selectAudienceCatalog(
+          input.message,
+          fullAudienceCatalog,
+          currentField === 'audienceDescription' || currentField === 'audienceConfirmation',
+        );
+        const extractedPatch = await this.extractor.extract({
+          message: input.message,
+          currentState: nextState,
+          userId: input.user.id,
+          audienceCatalog,
+          currentField,
+          referenceDate,
+        });
+        const patch = normalizeContextualPatch(extractedPatch, {
+          message: input.message,
+          currentField,
+          referenceDate,
+        });
+        const validatedPatch = validateAudiencePatch(patch, audienceCatalog);
+        const inferredFilters = patch.audienceDescription?.trim()
+          ? inferNaturalAudienceFilters(input.message, audienceCatalog)
+          : [];
+        const audienceFilters = dedupeAudienceFilters([
+          ...(validatedPatch.audienceFilters ?? []),
+          ...inferredFilters,
+        ]);
+        const enrichedPatch: ValidatedCampaignPatch = {
+          ...validatedPatch,
+          ...(patch.audienceDescription?.trim() ? { audienceFilters } : {}),
+          ...(audienceFilters.length > 0 ? { audienceAlternatives: [] } : {}),
+        };
+        nextState = applyExtractedPatch(nextState, enrichedPatch);
+        nextState = await this.resolveLocationIfPresent(input.token, nextState, patch);
+      }
 
       if (canCalculateComparison(nextState) && !nextState.comparison) {
         nextState = {
@@ -326,6 +359,82 @@ export class AssistantService {
       sessionId: saved.id,
       userType: saved.userType,
       eventName: 'message_sent',
+    });
+    return {
+      ...this.toView(saved),
+      assistantMessage: turn.message,
+      fallbackToManual: false,
+    };
+  }
+
+  async confirmAudienceClarification(input: {
+    id: string;
+    token: string;
+    user: UmmixUser;
+    alternativeId: string;
+  }): Promise<SessionView & { assistantMessage: string; fallbackToManual: false }> {
+    const session = await this.requireActiveSession(input.id, input.user.id);
+    const clarification = session.state.audienceClarification;
+    const alternative = clarification?.options.find(
+      (option) => option.id === input.alternativeId,
+    );
+    if (!alternative) {
+      throw new AssistantHttpError(
+        422,
+        'A alternativa de público não está mais disponível. Descreva o público novamente.',
+      );
+    }
+
+    let nextState: CampaignState = {
+      ...session.state,
+      audienceFilters: mergeAudienceFilters(
+        session.state.audienceFilters ?? [],
+        alternative.filters,
+      ),
+      audienceClarification: null,
+      comparison: null,
+      selectedChannel: null,
+    };
+    if (canCalculateComparison(nextState)) {
+      nextState = {
+        ...nextState,
+        comparison: await this.ummix.compareChannels(input.token, nextState),
+      };
+    }
+
+    const turn = nextAssistantTurn(nextState, {
+      clientName: displayClient(session.clientSnapshot),
+    });
+    const now = new Date().toISOString();
+    const messages: ChatMessage[] = [
+      ...session.messages,
+      {
+        role: 'user',
+        content: 'Público selecionado: ' + alternative.label,
+        createdAt: now,
+      },
+      { role: 'assistant', content: turn.message, createdAt: now },
+    ];
+    const saved = await this.repository.saveTurn({
+      id: session.id,
+      userId: input.user.id,
+      expectedVersion: session.version,
+      state: nextState,
+      messages,
+      status: isReadyToFinalize(nextState) ? 'ready' : 'collecting',
+      ttlMinutes: this.config.SESSION_TTL_MINUTES,
+    });
+    if (!saved) {
+      throw new AssistantHttpError(
+        409,
+        'A sessão foi atualizada em outra janela. Recarregue antes de continuar.',
+      );
+    }
+    await this.repository.trackMetric({
+      sessionId: saved.id,
+      userType: saved.userType,
+      eventName: 'audience_clarification_confirmed',
+      metadata: { alternativeId: alternative.id },
     });
     return {
       ...this.toView(saved),
@@ -609,11 +718,6 @@ function validateAudiencePatch(
   patch: ExtractedCampaignPatch,
   catalog: AudienceCatalogOption[],
 ): ValidatedCampaignPatch {
-  if (!patch.audienceDescription || patch.audienceFilters === undefined) {
-    const { audienceFilters: _audienceFilters, ...withoutAudienceFilters } = patch;
-    return withoutAudienceFilters;
-  }
-
   const allowed = new Map(
     catalog.map((option) => [
       `${option.questionId}:${option.optionId}`,
@@ -627,12 +731,61 @@ function validateAudiencePatch(
       },
     ]),
   );
+  const toSelection = (candidate: { questionId: string; optionId: string; confidence: number }) =>
+    candidate.confidence >= 0.7
+      ? allowed.get(`${candidate.questionId}:${candidate.optionId}`)
+      : undefined;
   const validated = (patch.audienceFilters ?? [])
-    .filter((candidate) => candidate.confidence >= 0.7)
-    .map((candidate) => allowed.get(`${candidate.questionId}:${candidate.optionId}`))
+    .map(toSelection)
     .filter((selection): selection is AudienceFilterSelection => Boolean(selection));
+  const validatedAlternatives = (patch.audienceAlternatives ?? [])
+    .filter((alternative) => alternative.confidence >= 0.7)
+    .map((alternative) =>
+      dedupeAudienceFilters(
+        alternative.audienceFilters
+          .map(toSelection)
+          .filter((selection): selection is AudienceFilterSelection => Boolean(selection)),
+      ),
+    )
+    .filter((filters) => filters.length > 0)
+    .filter((filters, index, all) => {
+      const signature = filters
+        .map((filter) => `${filter.questionId}:${filter.optionId}`)
+        .sort()
+        .join('|');
+      return all.findIndex((candidate) =>
+        candidate
+          .map((filter) => `${filter.questionId}:${filter.optionId}`)
+          .sort()
+          .join('|') === signature,
+      ) === index;
+    })
+    .slice(0, 2)
+    .map((filters, index) => ({
+      id: `audience-${String.fromCharCode(97 + index)}`,
+      label: buildAudienceAlternativeLabel(filters),
+      filters,
+    }));
 
-  return { ...patch, audienceFilters: dedupeAudienceFilters(validated) };
+  const {
+    audienceFilters: _audienceFilters,
+    audienceAlternatives: _audienceAlternatives,
+    ...basePatch
+  } = patch;
+  const hasDescription = Boolean(patch.audienceDescription?.trim());
+  const hasFilterCandidates = (patch.audienceFilters?.length ?? 0) > 0;
+  return {
+    ...basePatch,
+    ...(hasDescription || hasFilterCandidates
+      ? { audienceFilters: dedupeAudienceFilters(validated) }
+      : {}),
+    ...(hasDescription
+      ? {
+          audienceAlternatives:
+            validatedAlternatives.length >= 2 ? validatedAlternatives : [],
+        }
+      : {}),
+  };
 }
 
 function dedupeAudienceFilters(filters: AudienceFilterSelection[]): AudienceFilterSelection[] {
@@ -641,6 +794,48 @@ function dedupeAudienceFilters(filters: AudienceFilterSelection[]): AudienceFilt
     unique.set(`${filter.questionId}:${filter.optionId}`, filter);
   }
   return [...unique.values()];
+}
+
+function buildAudienceAlternativeLabel(filters: AudienceFilterSelection[]): string {
+  const grouped = new Map<string, string[]>();
+  for (const filter of filters) {
+    const values = grouped.get(filter.question) ?? [];
+    values.push(filter.option);
+    grouped.set(filter.question, values);
+  }
+  return [...grouped.entries()]
+    .map(([question, options]) => `${question}: ${[...new Set(options)].join(', ')}`)
+    .join(' · ')
+    .slice(0, 240);
+}
+
+function resolveAudienceClarification(
+  message: string,
+  clarification: CampaignState['audienceClarification'],
+): AudienceClarificationOption | null {
+  if (!clarification?.options.length) return null;
+  const normalized = normalizeText(message).replace(/\s+/g, ' ').trim();
+  return (
+    clarification.options.find(
+      (option) =>
+        normalized === normalizeText(option.id) ||
+        normalized === normalizeText(option.label) ||
+        (normalized === 'opcao a' && option.id === 'audience-a') ||
+        (normalized === 'opcao b' && option.id === 'audience-b'),
+    ) ?? null
+  );
+}
+
+function mergeAudienceFilters(
+  current: AudienceFilterSelection[],
+  incoming: AudienceFilterSelection[],
+): AudienceFilterSelection[] {
+  if (!incoming.length) return dedupeAudienceFilters(current);
+  const replacedQuestions = new Set(incoming.map((filter) => filter.questionId));
+  return dedupeAudienceFilters([
+    ...current.filter((filter) => !replacedQuestions.has(filter.questionId)),
+    ...incoming,
+  ]);
 }
 
 function selectAudienceCatalog(

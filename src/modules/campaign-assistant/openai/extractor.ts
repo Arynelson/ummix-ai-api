@@ -22,6 +22,22 @@ const extractionSchema = z.object({
       }),
     )
     .max(20),
+  audienceAlternatives: z
+    .array(
+      z.object({
+        audienceFilters: z
+          .array(
+            z.object({
+              questionId: z.string().uuid(),
+              optionId: z.string().uuid(),
+              confidence: z.number().min(0).max(1),
+            }),
+          )
+          .max(20),
+        confidence: z.number().min(0).max(1),
+      }),
+    )
+    .max(2),
   cityName: z.string().max(120).nullable(),
   stateUf: z.string().max(2).nullable(),
   maximumBudget: z.number().nonnegative().nullable(),
@@ -50,6 +66,32 @@ const jsonSchema = {
         required: ['questionId', 'optionId', 'confidence'],
       },
     },
+    audienceAlternatives: {
+      type: 'array',
+      maxItems: 2,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          audienceFilters: {
+            type: 'array',
+            maxItems: 20,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                questionId: { type: 'string' },
+                optionId: { type: 'string' },
+                confidence: { type: 'number', minimum: 0, maximum: 1 },
+              },
+              required: ['questionId', 'optionId', 'confidence'],
+            },
+          },
+          confidence: { type: 'number', minimum: 0, maximum: 1 },
+        },
+        required: ['audienceFilters', 'confidence'],
+      },
+    },
     cityName: { type: ['string', 'null'], maxLength: 120 },
     stateUf: { type: ['string', 'null'], maxLength: 2 },
     maximumBudget: { type: ['number', 'null'], minimum: 0 },
@@ -64,6 +106,7 @@ const jsonSchema = {
     'objective',
     'audienceDescription',
     'audienceFilters',
+    'audienceAlternatives',
     'cityName',
     'stateUf',
     'maximumBudget',
@@ -126,7 +169,9 @@ export class CampaignBriefExtractor {
             'Mapeie objetivos somente para reconhecimento_marca, lancamento_produto ou promocao_oferta.',
             'Mapeie canal somente quando o usuário escolher explicitamente Rádio ou TV.',
             'Quando a mensagem descrever o público, classifique somente opções presentes no audienceCatalog, retornando os IDs exatos questionId e optionId e uma confiança de 0 a 1.',
-            'Não invente IDs, perguntas ou opções. Se não houver correspondência segura, retorne audienceFilters vazio.',
+            'Se houver uma interpretação segura, retorne audienceFilters e deixe audienceAlternatives vazio.',
+            'Se houver ambiguidade, deixe audienceFilters vazio e retorne até duas audienceAlternatives, cada uma com filtros exatos do catálogo e confiança própria.',
+            'Não invente IDs, perguntas ou opções. Se não houver correspondência segura nem alternativas seguras, retorne ambos vazios.',
             'Converta valores monetários brasileiros para número e datas relativas para YYYY-MM-DD usando a data de referência.',
             'Use currentField como contexto da resposta: em maximumBudget, um número isolado está em reais brasileiros; em desiredStartDate, urgência significa a data calculada pelo backend.',
             'Nunca invente cidade, categoria, preço, audiência, frequência, período ou alcance.',
